@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -74,8 +75,10 @@ const moodyTitle = document.getElementById('moody-title') as HTMLHeadingElement;
 // Tab elements
 const diagramTabBtn = document.getElementById('diagram-tab-btn') as HTMLButtonElement;
 const aboutTabBtn = document.getElementById('about-tab-btn') as HTMLButtonElement;
+const presentationTabBtn = document.getElementById('presentation-tab-btn') as HTMLButtonElement;
 const diagramTabContent = document.getElementById('diagram-tab-content') as HTMLDivElement;
 const aboutTabContent = document.getElementById('about-tab-content') as HTMLDivElement;
+const presentationTabContent = document.getElementById('presentation-tab-content') as HTMLDivElement;
 
 
 // --- Constants & State ---
@@ -1474,8 +1477,8 @@ function initVerticalResizer() {
 }
 
 function initInfoTabs() {
-    const tabs = [diagramTabBtn, aboutTabBtn];
-    const panels = [diagramTabContent, aboutTabContent];
+    const tabs = [diagramTabBtn, aboutTabBtn, presentationTabBtn];
+    const panels = [diagramTabContent, aboutTabContent, presentationTabContent];
 
     const switchTab = (tabToActivate: HTMLButtonElement) => {
         const panelToActivate = document.getElementById(tabToActivate.getAttribute('aria-controls')!);

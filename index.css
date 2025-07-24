@@ -1,3 +1,4 @@
+
 @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
 
 :root {
@@ -470,7 +471,7 @@ canvas {
     gap: 1.5rem;
 }
 
-#description, #moody-diagram-container, #data-dashboard, #about-tab-content {
+#description, #moody-diagram-container, #data-dashboard, #about-tab-content, #presentation-tab-content {
     background-color: rgba(0, 0, 0, 0.2);
     padding: 1.5rem;
     border-radius: 8px;
@@ -487,7 +488,7 @@ canvas {
 }
 
 
-#flow-title, #moody-title, #data-dashboard h2, #about-tab-content h2 {
+#flow-title, #moody-title, #data-dashboard h2, #about-tab-content h2, #presentation-tab-content h2 {
     color: var(--secondary-color);
     margin-bottom: 0.75rem;
     text-align: center;
@@ -686,7 +687,7 @@ canvas {
     opacity: 1;
 }
 
-#about-tab-content h3 {
+#about-tab-content h3, #presentation-tab-content h3 {
     font-size: 1.1rem;
     color: white;
     margin-top: 1.5rem;
@@ -702,23 +703,23 @@ canvas {
     margin-bottom: 0.5rem;
 }
 
-#about-tab-content p, #about-tab-content li {
+#about-tab-content p, #about-tab-content li, #presentation-tab-content p, #presentation-tab-content li {
     line-height: 1.6;
     font-size: 0.95rem;
     color: var(--text-color);
 }
 
-#about-tab-content ul {
+#about-tab-content ul, #presentation-tab-content ul {
     list-style-position: inside;
     padding-left: 0.5rem;
     margin-top: 0.5rem;
 }
 
-#about-tab-content ul li {
+#about-tab-content ul li, #presentation-tab-content ul li {
     margin-bottom: 0.5rem;
 }
 
-#about-tab-content strong {
+#about-tab-content strong, #presentation-tab-content strong {
     color: var(--secondary-color);
     font-weight: 700;
 }
@@ -759,7 +760,60 @@ canvas {
     height: auto;
 }
 
-/* SVG specific styles */
+/* --- Presentation Tab Specific Styles --- */
+.presentation-section {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #444;
+}
+.presentation-section:last-child {
+    border-bottom: none;
+}
+
+.analogy-box {
+    background-color: rgba(74, 144, 226, 0.1);
+    border-left: 4px solid var(--igt-color);
+    padding: 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+    font-style: italic;
+}
+.analogy-box strong {
+    color: var(--igt-color);
+}
+
+.key-takeaway {
+    background-color: rgba(233, 69, 96, 0.1);
+    border-left: 4px solid var(--secondary-color);
+    padding: 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+}
+.key-takeaway ol {
+    padding-left: 1.5rem;
+}
+
+#presentation-tab-content .theory-item {
+    background-color: rgba(0,0,0,0.1);
+    border-left: none;
+    border-top: 1px solid #444;
+    padding-top: 1.5rem;
+    margin-top: 1.5rem;
+}
+
+/* --- Presentation SVG Styles --- */
+.pres-svg-wall { stroke: #aaa; stroke-width: 2; }
+.pres-svg-wall-vert { stroke: #aaa; stroke-width: 1.5; }
+.pres-svg-wall-material { fill: #4a5568; }
+.pres-svg-streamline { stroke: var(--particle-color); stroke-width: 1.5; }
+.pres-svg-streamline-turb { stroke: var(--particle-color); stroke-width: 1.5; fill: none; }
+.pres-svg-eddy { stroke: var(--particle-color); stroke-width: 1; fill: none; }
+.pres-svg-sublayer { fill: rgba(74, 144, 226, 0.5); }
+.pres-svg-rough-wall-small { stroke: #aaa; stroke-width: 1.5; fill: #4a5568; }
+.pres-svg-rough-wall-large { stroke: #aaa; stroke-width: 2; fill: #4a5568; }
+
+
+/* SVG specific styles from 'about' tab */
 .theory-svg .svg-title {
     font-size: 14px;
     font-weight: bold;
