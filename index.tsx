@@ -1493,6 +1493,12 @@ function initInfoTabs() {
             const isMatch = panel === panelToActivate;
             panel.classList.toggle('hidden', !isMatch);
         });
+
+        // If the moody diagram is floating, only show it when its tab is active.
+        if (moodyDiagramContainer.classList.contains('is-floating')) {
+            const isDiagramTabActive = tabToActivate === diagramTabBtn;
+            moodyDiagramContainer.classList.toggle('hidden', !isDiagramTabActive);
+        }
     };
 
     tabs.forEach(tab => {
