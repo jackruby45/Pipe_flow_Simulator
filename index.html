@@ -16,16 +16,63 @@
             <p class="credit">Written by Tim Bickford (Rev-2.0) 7/23/2025</p>
         </header>
         <main>
-            <div class="layout-column" id="controls-column">
-                <div id="controls">
-                    <div class="preset-controls">
-                        <button id="laminarBtn" class="control-btn active" aria-pressed="true">Laminar</button>
-                        <button id="partiallyTurbulentBtn" class="control-btn" aria-pressed="false">Partially Turbulent</button>
-                        <button id="fullyTurbulentBtn" class="control-btn" aria-pressed="false">Fully Turbulent</button>
-                        <button id="boundaryDetailBtn" class="control-btn" aria-pressed="false">Boundary Layer Detail</button>
-                        <button id="pipeWallDetailBtn" class="control-btn hidden" aria-pressed="false">Pipe Wall Detail</button>
+            <div class="layout-column" id="viz-column">
+                <div class="canvas-container pipe-container">
+                    <div class="canvas-header">
+                        <h2 class="canvas-title">Particle Flow</h2>
+                        <button id="explain-btn" class="explain-btn" role="switch" aria-checked="false" title="Toggle explanation overlay">Explain</button>
                     </div>
-                    <div class="slider-controls">
+                    <canvas id="pipelineCanvas"></canvas>
+                </div>
+                <div id="vertical-resizer" role="separator" aria-orientation="horizontal" aria-controls="pipelineCanvas velocityProfileCanvas"></div>
+                <div class="canvas-container velocity-container">
+                    <h2 class="canvas-title">Velocity Profile</h2>
+                    <canvas id="velocityProfileCanvas"></canvas>
+                </div>
+            </div>
+
+            <div id="resizer" role="separator" aria-orientation="vertical" aria-controls="viz-column sidebar-column"></div>
+
+            <div class="layout-column" id="sidebar-column">
+                <div id="controls">
+                    <div class="control-group">
+                        <div class="preset-controls">
+                            <button id="laminarBtn" class="control-btn active" aria-pressed="true">Laminar</button>
+                            <button id="partiallyTurbulentBtn" class="control-btn" aria-pressed="false">Partially Turbulent</button>
+                            <button id="fullyTurbulentBtn" class="control-btn" aria-pressed="false">Fully Turbulent</button>
+                        </div>
+                         <div class="preset-controls">
+                            <button id="boundaryDetailBtn" class="control-btn" aria-pressed="false">Boundary Layer Detail</button>
+                            <button id="pipeWallDetailBtn" class="control-btn hidden" aria-pressed="false">Pipe Wall Detail</button>
+                        </div>
+                    </div>
+                    <div class="control-group equation-controls">
+                        <h3 class="equation-title">Friction Factor Models</h3>
+                        <div class="equation-toggles">
+                            <div class="toggle-container">
+                                <input type="checkbox" id="colebrook-toggle" checked>
+                                <label for="colebrook-toggle">Colebrook-White</label>
+                            </div>
+                            <div class="toggle-container">
+                                <input type="checkbox" id="igt-toggle">
+                                <label for="igt-toggle">IGT</label>
+                            </div>
+                            <div class="toggle-container">
+                                <input type="checkbox" id="aga-toggle">
+                                <label for="aga-toggle">AGA Fully Turbulent</label>
+                            </div>
+                        </div>
+                        <p id="colebrook-explanation" class="equation-explanation">
+                            The Colebrook-White equation is an industry standard for turbulent flow, accurately accounting for both the fluid's Reynolds number and the pipe's relative roughness.
+                        </p>
+                        <p id="igt-explanation" class="equation-explanation hidden">
+                            Note: The IGT model is independent of pipe roughness and follows the highlighted "Smooth Pipe" curve.
+                        </p>
+                        <p id="aga-explanation" class="equation-explanation hidden">
+                            The AGA equation is for "fully rough" turbulence where friction depends only on relative roughness, corresponding to the horizontal portion of the Moody curves.
+                        </p>
+                    </div>
+                    <div class="control-group slider-controls">
                         <div id="reynolds-control-container" class="slider-container">
                             <div class="slider-header">
                                 <label for="reynolds-slider">Reynolds Number (Re)</label>
@@ -56,54 +103,8 @@
                             </div>
                         </div>
                     </div>
-                     <div class="equation-controls">
-                        <h3 class="equation-title">Friction Factor Models</h3>
-                        <div class="equation-toggles">
-                            <div class="toggle-container">
-                                <input type="checkbox" id="colebrook-toggle" checked>
-                                <label for="colebrook-toggle">Colebrook-White</label>
-                            </div>
-                            <div class="toggle-container">
-                                <input type="checkbox" id="igt-toggle">
-                                <label for="igt-toggle">IGT</label>
-                            </div>
-                            <div class="toggle-container">
-                                <input type="checkbox" id="aga-toggle">
-                                <label for="aga-toggle">AGA Fully Turbulent</label>
-                            </div>
-                        </div>
-                        <p id="colebrook-explanation" class="equation-explanation">
-                            The Colebrook-White equation is an industry standard for turbulent flow, accurately accounting for both the fluid's Reynolds number and the pipe's relative roughness.
-                        </p>
-                        <p id="igt-explanation" class="equation-explanation hidden">
-                            Note: The IGT model is independent of pipe roughness and follows the highlighted "Smooth Pipe" curve.
-                        </p>
-                        <p id="aga-explanation" class="equation-explanation hidden">
-                            The AGA equation is for "fully rough" turbulence where friction depends only on relative roughness, corresponding to the horizontal portion of the Moody curves.
-                        </p>
-                    </div>
                 </div>
-            </div>
-
-            <div id="resizable-container">
-                <div class="layout-column" id="viz-column">
-                    <div class="canvas-container pipe-container">
-                        <div class="canvas-header">
-                            <h2 class="canvas-title">Particle Flow</h2>
-                            <button id="explain-btn" class="explain-btn" role="switch" aria-checked="false" title="Toggle explanation overlay">Explain</button>
-                        </div>
-                        <canvas id="pipelineCanvas"></canvas>
-                    </div>
-                    <div id="vertical-resizer" role="separator" aria-orientation="horizontal" aria-controls="pipelineCanvas velocityProfileCanvas"></div>
-                    <div class="canvas-container velocity-container">
-                        <h2 class="canvas-title">Velocity Profile</h2>
-                        <canvas id="velocityProfileCanvas"></canvas>
-                    </div>
-                </div>
-
-                <div id="resizer" role="separator" aria-orientation="vertical" aria-controls="viz-column info-column"></div>
-
-                <div class="layout-column" id="info-column">
+                <div id="info-column">
                     <div class="info-tabs">
                         <button id="diagram-tab-btn" class="info-tab-btn active" role="tab" aria-selected="true" aria-controls="diagram-tab-content">Diagram &amp; Metrics</button>
                         <button id="about-tab-btn" class="info-tab-btn" role="tab" aria-selected="false" aria-controls="about-tab-content">About &amp; Theory</button>

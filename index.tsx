@@ -1,4 +1,3 @@
-
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -60,10 +59,10 @@ const metricRoughness = document.getElementById('metric-roughness') as HTMLSpanE
 const metricRelRoughness = document.getElementById('metric-rel-roughness') as HTMLSpanElement;
 const frictionFactorMetrics = document.getElementById('friction-factor-metrics') as HTMLDivElement;
 
+const mainContainer = document.querySelector('main') as HTMLElement;
 const resizer = document.getElementById('resizer') as HTMLDivElement;
-const resizableContainer = document.getElementById('resizable-container') as HTMLDivElement;
 const vizColumn = document.getElementById('viz-column') as HTMLDivElement;
-const infoColumn = document.getElementById('info-column') as HTMLDivElement;
+const sidebarColumn = document.getElementById('sidebar-column') as HTMLDivElement;
 const verticalResizer = document.getElementById('vertical-resizer') as HTMLDivElement;
 const pipeContainer = document.querySelector('.pipe-container') as HTMLDivElement;
 const velocityContainer = document.querySelector('.velocity-container') as HTMLDivElement;
@@ -683,22 +682,26 @@ const drawTextWithBackground = (
     ctx.textBaseline = 'middle';
 
     const textMetrics = ctx.measureText(text);
-    const padding = 5;
+    const hPadding = 12; // Generous horizontal padding
+    const vPadding = 10; // Generous vertical padding
     const textHeight = (textMetrics.actualBoundingBoxAscent || 14) + (textMetrics.actualBoundingBoxDescent || 2);
-    const rectHeight = textHeight + padding;
-    const rectWidth = textMetrics.width + padding * 2;
+    const rectHeight = textHeight + vPadding * 2;
+    const rectWidth = textMetrics.width + hPadding * 2;
     
     let rectX;
-    if (textAlign === 'left') rectX = finalX - padding;
-    else if (textAlign === 'right') rectX = finalX - rectWidth + padding;
+    if (textAlign === 'left') rectX = finalX - hPadding;
+    else if (textAlign === 'right') rectX = finalX - rectWidth + hPadding;
     else rectX = finalX - rectWidth / 2;
     
     const rectY = finalY - rectHeight / 2;
 
-    ctx.fillStyle = 'rgba(22, 33, 62, 0.7)';
+    ctx.fillStyle = 'rgba(22, 33, 62, 0.85)';
+    ctx.strokeStyle = '#e94560'; // Red border for consistency
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.roundRect(rectX, rectY, rectWidth, rectHeight, 4);
+    ctx.roundRect(rectX, rectY, rectWidth, rectHeight, 6);
     ctx.fill();
+    ctx.stroke();
     
     ctx.fillStyle = 'white';
     ctx.fillText(text, finalX, finalY);
@@ -835,34 +838,36 @@ function drawExplanationOverlay(
     ctx.lineWidth = 1.5;
 
     if (uiFlowState === 'laminar' || uiFlowState === 'transition') {
-        drawTextWithBackground(ctx, 'Smooth, parallel layers', 100, 40, 'center');
-        drawArrow(ctx, 100, 55, 100, 85, progress);
+        const text1 = drawTextWithBackground(ctx, 'Smooth, parallel layers', 100, 40, 'center', 'explain-laminar-1');
+        drawArrow(ctx, text1.x + text1.width/2, text1.y + text1.height, 100, 85, progress);
 
-        drawTextWithBackground(ctx, 'Max Velocity at Center', centerX, centerY - 40, 'center');
-        drawArrow(ctx, centerX, centerY - 30, centerX, centerY, progress);
+        const text2 = drawTextWithBackground(ctx, 'Max Velocity at Center', centerX, centerY - 40, 'center', 'explain-laminar-2');
+        drawArrow(ctx, text2.x + text2.width/2, text2.y + text2.height, centerX, centerY, progress);
 
-        drawTextWithBackground(ctx, 'Velocity ≈ 0 at Wall', width - 100, WALL_BUFFER + 25, 'center');
-        drawArrow(ctx, width - 100, WALL_BUFFER + 35, width - 100, WALL_BUFFER + 5, progress);
+        const text3 = drawTextWithBackground(ctx, 'Velocity ≈ 0 at Wall', width - 100, WALL_BUFFER + 25, 'center', 'explain-laminar-3');
+        drawArrow(ctx, text3.x + text3.width/2, text3.y + text3.height, width - 100, WALL_BUFFER + 5, progress);
 
         drawInfoBox(ctx, 'Laminar Flow Impact', [
             '<b>Friction Driver:</b> Fluid Viscosity',
             '<b>Pressure Drop:</b> Minimal & Predictable',
-            'Flow is stable and predictable, with low energy loss.',
+            'Flow is stable and predictable, with',
+            'low energy loss.',
             ' ',
             '∙ Note: Darcy f_D = 4 x Fanning f'
-        ], easeOutProgress);
+        ], easeOutProgress, 'explain-laminar-infobox');
+
     } else { // Turbulent states
         const eddyX = centerX + 80;
         const eddyY = centerY + 30;
         const eddyRadius = 20;
 
-        drawTextWithBackground(ctx, 'Chaotic Eddies & Mixing', eddyX, eddyY - eddyRadius - 25, 'center');
-        drawArrow(ctx, eddyX, eddyY - eddyRadius - 15, eddyX, eddyY - eddyRadius, progress);
+        const text1 = drawTextWithBackground(ctx, 'Chaotic Eddies & Mixing', eddyX, eddyY - eddyRadius - 25, 'center', 'explain-turb-1');
+        drawArrow(ctx, text1.x + text1.width/2, text1.y + text1.height, eddyX, eddyY - eddyRadius, progress);
         ctx.beginPath();
         ctx.arc(eddyX, eddyY, eddyRadius * progress, 0, Math.PI * 2);
         ctx.stroke();
         
-        drawTextWithBackground(ctx, 'Flatter Velocity Profile', centerX, height - 40, 'center');
+        drawTextWithBackground(ctx, 'Flatter Velocity Profile', centerX, height - 40, 'center', 'explain-turb-2');
         ctx.beginPath();
         const arrowStart = centerX - 70;
         ctx.moveTo(arrowStart, height - 25);
@@ -873,25 +878,27 @@ function drawExplanationOverlay(
         const boundaryLayerYTop = WALL_BUFFER + boundaryLayerThickness;
 
         if (physicsFlowState === 'fully-turbulent') {
-            drawTextWithBackground(ctx, 'Thin Boundary Layer', 100, boundaryLayerYTop + 20, 'center');
-            drawArrow(ctx, 100, boundaryLayerYTop + 15, 100, boundaryLayerYTop - 5, progress);
+            const text3 = drawTextWithBackground(ctx, 'Thin Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
+            drawArrow(ctx, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
             drawInfoBox(ctx, 'Complete Turbulence Impact', [
                 '<b>Friction Driver:</b> Pipe Roughness',
                 '<b>Pressure Drop:</b> Maximum',
-                'Friction is now independent of Re. Further increases',
-                'in velocity do not make the flow "smoother".',
+                'Friction is now independent of Re.',
+                'Further increases in velocity do not',
+                'make the flow "smoother".',
                 '∙ Note: Darcy f_D = 4 x Fanning f'
-            ], easeOutProgress);
+            ], easeOutProgress, 'explain-fullyturb-infobox');
         } else { // Partially turbulent
-            drawTextWithBackground(ctx, 'Thicker Boundary Layer', 100, boundaryLayerYTop + 20, 'center');
-            drawArrow(ctx, 100, boundaryLayerYTop + 15, 100, boundaryLayerYTop - 5, progress);
+            const text3 = drawTextWithBackground(ctx, 'Thicker Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
+            drawArrow(ctx, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
             drawInfoBox(ctx, 'Partial Turbulence Impact', [
                 '<b>Friction Driver:</b> Re & Roughness',
                 '<b>Pressure Drop:</b> High',
-                'The boundary layer partially shields the main flow from',
-                'the pipe wall, but mixing still causes high energy loss.',
+                'The boundary layer partially shields',
+                'the main flow from the pipe wall,',
+                'but mixing still causes high energy loss.',
                 '∙ Note: Darcy f_D = 4 x Fanning f'
-            ], easeOutProgress);
+            ], easeOutProgress, 'explain-partturb-infobox');
         }
     }
     ctx.restore();
@@ -941,20 +948,24 @@ function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
 
     if (isSmooth) {
         drawInfoBox(ctx, 'Hydraulically Smooth Flow', [
-            'The viscous sublayer is thicker than the roughness',
-            'elements, effectively "hiding" them from the main flow.',
+            'The viscous sublayer is thicker than',
+            'the roughness elements, effectively',
+            '"hiding" them from the main flow.',
             '<b>Friction Driver:</b> Fluid Viscosity (Re)',
-            'Particles flow smoothly over the buffered surface.'
+            'Particles flow smoothly over the',
+            'buffered surface.'
         ], 1.0, 'boundary-infobox');
 
         const textRect = drawTextWithBackground(ctx, 'Roughness elements buried in sublayer', width / 2, wallBaseY - roughnessHeight - 20, 'center', 'boundary-text-1');
         drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
     } else {
         drawInfoBox(ctx, 'Rough Flow', [
-            'Roughness elements are taller than the viscous sublayer,',
-            'piercing into the faster-moving turbulent flow.',
+            'Roughness elements are taller than',
+            'the viscous sublayer, piercing into',
+            'the faster-moving turbulent flow.',
             '<b>Friction Driver:</b> Pipe Roughness (ε)',
-            'Collisions create eddies, causing significant energy loss.'
+            'Collisions create eddies, causing',
+            'significant energy loss.'
         ], 1.0, 'boundary-infobox');
         const textRect = drawTextWithBackground(ctx, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - roughnessHeight - 40, 'center', 'boundary-text-1');
         drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - roughnessHeight + 5);
@@ -963,8 +974,9 @@ function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     // Label sublayer
     const sublayerRect = drawTextWithBackground(ctx, 'Viscous Sublayer', 150, sublayerTopY + sublayerThickness / 2, 'center', 'boundary-sublayer-label');
     const arrowFromX = sublayerRect.x + sublayerRect.width / 2;
-    drawArrow(ctx, arrowFromX, sublayerRect.y, arrowFromX, sublayerTopY);
-    drawArrow(ctx, arrowFromX, sublayerRect.y + sublayerRect.height, arrowFromX, wallBaseY);
+    const arrowY = sublayerRect.y; // Y is middle, so draw from here
+    drawArrow(ctx, arrowFromX, arrowY - sublayerRect.height / 2, arrowFromX, sublayerTopY);
+    drawArrow(ctx, arrowFromX, arrowY + sublayerRect.height / 2, arrowFromX, wallBaseY);
 
     ctx.restore();
 }
@@ -1017,9 +1029,10 @@ function drawPipeWallDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     if (isSmooth) {
         drawInfoBox(ctx, 'Wall View: Hydraulically Smooth', [
             '<b>Condition:</b> Viscous Sublayer > Roughness Height (ε)',
-            'The sublayer engulfs the wall texture, creating a "smooth"',
-            'buffer. The main flow does not interact with the wall, and',
-            'friction is driven primarily by fluid viscosity.',
+            'The sublayer engulfs the wall texture,',
+            'creating a "smooth" buffer. The main flow',
+            'does not interact with the wall, and',
+            'friction is driven by fluid viscosity.',
             '∙ Particles glide smoothly over the buffered zone.'
         ], 1.0, 'wall-infobox');
         
@@ -1031,8 +1044,9 @@ function drawPipeWallDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     } else {
         drawInfoBox(ctx, 'Wall View: Rough Flow', [
             '<b>Condition:</b> Roughness Height (ε) > Viscous Sublayer',
-            'Peaks protrude into the flow, creating form drag and chaotic',
-            'eddies. This significantly increases energy loss.',
+            'Peaks protrude into the flow, creating',
+            'form drag and chaotic eddies. This',
+            'significantly increases energy loss.',
             '∙ Friction is dominated by physical obstructions.',
             '∙ Particles are trapped in valleys, dissipating energy.'
         ], 1.0, 'wall-infobox');
@@ -1133,6 +1147,7 @@ function updateIndicatorsAndDashboard(re: number, absRoughness: number, diameter
 
 // --- Animation Loop Handlers ---
 function animateFullPipeView(time: number) {
+     currentFrameHitboxes = [];
      const trueRelativeRoughness = absoluteRoughnessIN / currentPipeDiameterIN;
      const physicsProps = getFlowProperties(currentRe, trueRelativeRoughness);
      currentF = physicsProps.friction;
@@ -1304,14 +1319,14 @@ function updateRelativeRoughnessInput() {
 
 function initHorizontalResizer() {
     let isResizing = false;
-    let startX: number, startVizWidth: number, startInfoWidth: number;
+    let startX: number, startVizWidth: number, startSidebarWidth: number;
 
     resizer.addEventListener('mousedown', (e) => {
         e.preventDefault();
         isResizing = true;
         startX = e.clientX;
         startVizWidth = vizColumn.getBoundingClientRect().width;
-        startInfoWidth = infoColumn.getBoundingClientRect().width;
+        startSidebarWidth = sidebarColumn.getBoundingClientRect().width;
 
         document.body.classList.add('is-resizing');
         resizer.classList.add('is-resizing');
@@ -1325,13 +1340,13 @@ function initHorizontalResizer() {
 
         const dx = e.clientX - startX;
         const newVizWidth = startVizWidth + dx;
-        const newInfoWidth = startInfoWidth - dx;
+        const newSidebarWidth = startSidebarWidth - dx;
 
-        const minVizWidth = 200; 
-        const minInfoWidth = 450; 
+        const minVizWidth = 300; 
+        const minSidebarWidth = 400; 
 
-        if (newVizWidth >= minVizWidth && newInfoWidth >= minInfoWidth) {
-            resizableContainer.style.gridTemplateColumns = `${newVizWidth}px ${resizer.offsetWidth}px ${newInfoWidth}px`;
+        if (newVizWidth >= minVizWidth && newSidebarWidth >= minSidebarWidth) {
+            mainContainer.style.gridTemplateColumns = `${newVizWidth}px ${resizer.offsetWidth}px ${newSidebarWidth}px`;
         }
     }
 
@@ -1342,11 +1357,11 @@ function initHorizontalResizer() {
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
         
-        const totalWidth = vizColumn.offsetWidth + infoColumn.offsetWidth;
+        const totalWidth = vizColumn.offsetWidth + sidebarColumn.offsetWidth;
         if (totalWidth > 0) {
             const vizFr = vizColumn.offsetWidth / totalWidth;
-            const infoFr = infoColumn.offsetWidth / totalWidth;
-            resizableContainer.style.gridTemplateColumns = `${vizFr}fr ${resizer.offsetWidth}px ${infoFr}fr`;
+            const sidebarFr = sidebarColumn.offsetWidth / totalWidth;
+            mainContainer.style.gridTemplateColumns = `${vizFr}fr ${resizer.offsetWidth}px ${sidebarFr}fr`;
         }
         handleCanvasResize();
     }
@@ -1435,7 +1450,10 @@ function initInfoTabs() {
 
 function initDragHandler() {
     const onCanvasMouseDown = (e: MouseEvent) => {
-        if (currentViewMode === 'full') return;
+        // Allow dragging in detail views, OR in full view ONLY if explain is on.
+        if (currentViewMode === 'full' && !showExplanation) {
+            return;
+        }
         
         const rect = canvas.getBoundingClientRect();
         const scaleX = canvas.clientWidth / rect.width;
@@ -1487,7 +1505,11 @@ function initDragHandler() {
     };
 
     const onCanvasMouseMove = (e: MouseEvent) => {
-        if (isDragging || currentViewMode === 'full') return;
+        // Same logic as onCanvasMouseDown for showing the grab cursor
+        if (isDragging || (currentViewMode === 'full' && !showExplanation)) {
+             canvas.style.cursor = 'default';
+             return;
+        }
 
         const rect = canvas.getBoundingClientRect();
         const scaleX = canvas.clientWidth / rect.width;
@@ -1598,6 +1620,7 @@ boundaryDetailBtn.addEventListener('click', () => {
     } else {
         currentViewMode = 'full';
     }
+    annotationOffsets.clear();
     updateViewModeUI();
     initParticles();
 });
@@ -1608,6 +1631,7 @@ pipeWallDetailBtn.addEventListener('click', () => {
     } else if (currentViewMode === 'wall') {
         currentViewMode = 'boundary';
     }
+    annotationOffsets.clear();
     updateViewModeUI();
     initParticles();
 });
@@ -1618,6 +1642,7 @@ explainBtn.addEventListener('click', () => {
     explainBtn.classList.toggle('active', showExplanation);
     explainBtn.setAttribute('aria-checked', String(showExplanation));
     if (showExplanation) {
+        annotationOffsets.clear();
         explanationAnimationStartTimestamp = performance.now();
     } else {
         explanationAnimationStartTimestamp = null;
