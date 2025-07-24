@@ -1,5 +1,5 @@
 {
-  "name": "Advanced Pipeline Flow Simulation",
+  "name": "Pipeline Dynamics Simulator",
   "description": "An interactive simulation of laminar, turbulent, and fully turbulent flow inside a natural gas pipeline, with a live velocity profile graph and data dashboard.",
   "requestFramePermissions": [],
   "prompt": ""

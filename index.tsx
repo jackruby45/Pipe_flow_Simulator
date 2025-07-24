@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -12,6 +13,7 @@ interface Particle {
 }
 type FlowPreset = 'laminar' | 'partially-turbulent' | 'fully-turbulent';
 type Equation = 'colebrook' | 'igt' | 'aga';
+type ViewMode = 'full' | 'boundary' | 'wall';
 interface FrictionResult {
     name: string;
     value: number;
@@ -23,6 +25,9 @@ const canvas = document.getElementById('pipelineCanvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 const velocityCanvas = document.getElementById('velocityProfileCanvas') as HTMLCanvasElement;
 const vCtx = velocityCanvas.getContext('2d')!;
+const explainBtn = document.getElementById('explain-btn') as HTMLButtonElement;
+const boundaryDetailBtn = document.getElementById('boundaryDetailBtn') as HTMLButtonElement;
+const pipeWallDetailBtn = document.getElementById('pipeWallDetailBtn') as HTMLButtonElement;
 
 const laminarBtn = document.getElementById('laminarBtn') as HTMLButtonElement;
 const partiallyTurbulentBtn = document.getElementById('partiallyTurbulentBtn') as HTMLButtonElement;
@@ -63,6 +68,13 @@ const verticalResizer = document.getElementById('vertical-resizer') as HTMLDivEl
 const pipeContainer = document.querySelector('.pipe-container') as HTMLDivElement;
 const velocityContainer = document.querySelector('.velocity-container') as HTMLDivElement;
 
+// Tab elements
+const diagramTabBtn = document.getElementById('diagram-tab-btn') as HTMLButtonElement;
+const aboutTabBtn = document.getElementById('about-tab-btn') as HTMLButtonElement;
+const diagramTabContent = document.getElementById('diagram-tab-content') as HTMLDivElement;
+const aboutTabContent = document.getElementById('about-tab-content') as HTMLDivElement;
+
+
 // --- Constants & State ---
 const PARTICLE_COUNT = 300;
 const WALL_BUFFER = 5;
@@ -86,8 +98,12 @@ const PIPE_SCHEDULE_40_IDS_IN = new Map([
 let particles: Particle[] = [];
 let animationFrameId: number;
 let currentProfile: number[] = [];
+let showExplanation = false;
+let explanationAnimationStartTimestamp: number | null = null;
+let roughnessProfile: number[] = [];
 
 // --- Dynamic State ---
+let currentViewMode: ViewMode = 'full';
 let currentRe = 2000;
 let targetRe = 2000;
 let currentF = 0; // Primary friction factor for physics (Colebrook)
@@ -99,6 +115,15 @@ let activeEquations = {
     igt: false,
     aga: false
 };
+
+// --- State for Draggable Annotations ---
+const annotationOffsets: Map<string, {x: number, y: number}> = new Map();
+let currentFrameHitboxes: {id: string, rect: {x: number, y: number, width: number, height: number}}[] = [];
+let draggedAnnotationId: string | null = null;
+let isDragging = false;
+let dragStartPos = { x: 0, y: 0 };
+let dragStartOffset = { x: 0, y: 0 };
+
 
 const flowDescriptions = {
     laminar: { title: 'Laminar Flow', text: 'In laminar flow (Re < 2300), gas molecules move in smooth, parallel layers. Friction is governed by viscosity and is independent of pipe roughness.' },
@@ -164,6 +189,29 @@ function calculateIgtFriction(re: number): number {
     // The IGT model represents turbulent flow in a perfectly smooth pipe.
     return getFlowProperties(re, 0).friction;
 }
+
+function calculateFrictionContribution(re: number, relativeRoughness: number): { viscosity: number, roughness: number } {
+    if (re <= 4000 || relativeRoughness <= 0) {
+        // In laminar, transition, or for a perfectly smooth pipe, friction is 100% due to viscosity.
+        return { viscosity: 100, roughness: 0 };
+    }
+
+    // These terms are from the Swamee-Jain approximation, representing the two
+    // main drivers of friction in the Colebrook equation.
+    const roughnessTerm = relativeRoughness / 3.7;
+    const viscousTerm = 5.74 / Math.pow(re, 0.9);
+
+    const totalContribution = roughnessTerm + viscousTerm;
+    if (totalContribution === 0) {
+        return { viscosity: 100, roughness: 0 };
+    }
+
+    const viscosityPercent = (viscousTerm / totalContribution) * 100;
+    const roughnessPercent = (roughnessTerm / totalContribution) * 100;
+
+    return { viscosity: viscosityPercent, roughness: roughnessPercent };
+}
+
 
 function mapLog(value: number, fromMin: number, fromMax: number, toMin: number, toMax: number): number {
     if (value <= fromMin) return toMin;
@@ -292,14 +340,34 @@ function setupCanvas(canvasEl: HTMLCanvasElement): void {
 }
 
 function createParticle(): Particle {
-    return {
-        x: Math.random() * canvas.clientWidth,
-        y: Math.random() * canvas.clientHeight,
+    const common = {
         vx: 0, vy: 0,
         radius: Math.random() * 1.5 + 1,
         alpha: Math.random() * 0.5 + 0.3,
         color: '#a7c5eb'
     };
+    switch (currentViewMode) {
+        case 'boundary':
+            return {
+                ...common,
+                x: Math.random() * canvas.clientWidth,
+                y: Math.random() * (canvas.clientHeight * 0.7), // Start in upper 70%
+            };
+        case 'wall':
+             return {
+                ...common,
+                x: Math.random() * canvas.clientWidth,
+                y: Math.random() * canvas.clientHeight,
+                radius: Math.random() * 2 + 1, // slightly bigger particles to see
+            };
+        case 'full':
+        default:
+            return {
+                ...common,
+                x: Math.random() * canvas.clientWidth,
+                y: Math.random() * canvas.clientHeight,
+            };
+    }
 }
 
 function initParticles() {
@@ -307,10 +375,15 @@ function initParticles() {
     for (let i = 0; i < PARTICLE_COUNT; i++) {
         particles.push(createParticle());
     }
+     // Create a random profile for the bumpy wall in the detail view
+    roughnessProfile = [];
+    for (let i = 0; i < canvas.clientWidth; i++) {
+        roughnessProfile.push(Math.random());
+    }
 }
 
 // --- Flow Logic (influenced by currentRe) ---
-function updateParticle(p: Particle, re: number, f: number) {
+function updateParticleInFullView(p: Particle, re: number, f: number) {
     const normalizedY = p.y / canvas.clientHeight;
     const distFromCenter = Math.abs(normalizedY - 0.5) * 2; // 0 at center, 1 at wall
 
@@ -340,6 +413,110 @@ function updateParticle(p: Particle, re: number, f: number) {
     }
     p.color = getColorForVelocity(p.vx, 12);
 }
+
+function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: number, sublayerThickness: number) {
+    const wallBaseY = canvas.clientHeight * 0.8;
+    const roughnessXIndex = Math.floor(p.x);
+    const wallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
+    const sublayerTopY = wallBaseY - sublayerThickness;
+
+    // Base velocity in the free stream
+    let baseVx = mapLog(re, 2301, 20000000, 4, 15);
+    let turbulenceFactor = Math.max(0, Math.log10(re / 2000)) * 2;
+
+    p.vy += (Math.random() - 0.5) * turbulenceFactor * 0.2; // Gravity/settling effect
+    p.vx = baseVx + (Math.random() - 0.5) * turbulenceFactor;
+
+    if (p.y > sublayerTopY) { // Inside boundary/sublayer
+        const depthRatio = (p.y - sublayerTopY) / (wallBaseY - sublayerTopY);
+        p.vx *= (1 - depthRatio * 0.9); // Slow down significantly near wall
+        p.vy *= 0.5; // Dampen vertical motion
+    }
+
+    p.x += p.vx;
+    p.y += p.vy;
+
+    // Collision with rough wall
+    if (p.y > wallY) {
+        p.y = wallY;
+        p.vx *= 0.8;
+        p.vy *= -0.4; // Bounce off
+        // Create an eddy
+        p.vy += (Math.random() - 0.8) * 4;
+        p.vx += (Math.random() - 0.5) * 4;
+    }
+    
+    // Reset particle
+    if (p.x > canvas.clientWidth + p.radius) {
+        p.x = -p.radius;
+        p.y = Math.random() * (canvas.clientHeight * 0.7);
+    }
+    if (p.y < -p.radius) { // If it flies off the top
+        p.y = 0;
+    }
+    p.color = getColorForVelocity(p.vx, 16);
+}
+
+function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight: number, sublayerThickness: number) {
+    const wallBaseY = canvas.clientHeight * 0.75;
+    const roughnessXIndex = Math.floor(p.x + canvas.clientWidth) % canvas.clientWidth;
+    const wallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
+    const sublayerTopY = wallBaseY - sublayerThickness;
+
+    const isSmooth = sublayerThickness > roughnessHeight;
+
+    if (isSmooth) {
+        // Particles move slowly just above the sublayer
+        p.vx = 0.5 + Math.random() * 0.5;
+        p.vy += (Math.random() - 0.5) * 0.2; // very little vertical motion
+        if (p.y < sublayerTopY - p.radius * 2) { // If it gets too high, pull it back down
+            p.vy += 0.1;
+        } else if (p.y > sublayerTopY - p.radius) { // If it gets too low, push it up
+            p.vy -= 0.1;
+        }
+
+    } else { // Rough
+        if (p.y > sublayerTopY) { // Trapped in the roughness
+            // Swirling eddy motion
+            p.vx += (Math.random() - 0.5) * 1.5 - (p.vx * 0.1);
+            p.vy += (Math.random() - 0.5) * 1.5 - (p.vy * 0.1);
+        } else { // In the faster flow above
+            p.vx = 1 + Math.random();
+            p.vy += (Math.random() - 0.5) * 0.5;
+        }
+
+        // Collision with rough wall
+        if (p.y + p.radius > wallY) {
+            p.y = wallY - p.radius;
+            p.vx *= -0.3; // bounce back
+            p.vy *= -0.5; // bounce up
+        }
+    }
+
+    p.x += p.vx;
+    p.y += p.vy;
+
+    // Reset particle
+    if (p.x > canvas.clientWidth + p.radius) {
+        p.x = -p.radius;
+        p.y = Math.random() * (wallBaseY - sublayerThickness * 1.2); // reset into the flow
+    }
+     if (p.x < -p.radius) {
+        p.x = canvas.clientWidth + p.radius;
+        p.y = Math.random() * (wallBaseY - sublayerThickness * 1.2);
+    }
+    if (p.y < -p.radius) { // flew off top
+        p.y = 0;
+        p.x = Math.random() * canvas.clientWidth;
+    }
+    // Clamp to bottom
+    if(p.y > canvas.clientHeight) {
+        p.y = canvas.clientHeight;
+    }
+
+    p.color = getColorForVelocity(Math.hypot(p.vx, p.vy), 4);
+}
+
 
 
 // --- Velocity Profile Logic ---
@@ -424,6 +601,453 @@ function drawPipe3D() {
     ctx.fillRect(0, pipeBottomY - 5, width, 5);
 }
 
+/**
+ * Draws a visual, animated representation of the boundary layer.
+ * This layer is only shown for turbulent flow, is more prominent, and has a
+ * subtle shimmer effect to make it feel more dynamic.
+ */
+function drawBoundaryLayer(ctx: CanvasRenderingContext2D, re: number, time: number) {
+    if (re <= 2300) return; // Only show for transition/turbulent flow
+
+    const width = ctx.canvas.clientWidth;
+    const height = ctx.canvas.clientHeight;
+    const pipeTopY = WALL_BUFFER;
+    const pipeBottomY = height - WALL_BUFFER;
+
+    // The boundary layer gets thinner as Re increases.
+    const thickness = mapLog(re, 2301, 20000000, 30, 5);
+
+    // --- Use a contrasting, theme-aligned color ---
+    const baseColor = '233, 69, 96'; // App's secondary color (red-pink)
+
+    // Top Layer Gradient
+    const topGradient = ctx.createLinearGradient(0, pipeTopY, 0, pipeTopY + thickness);
+    topGradient.addColorStop(0, `rgba(${baseColor}, 0.35)`); // More opaque at the wall
+    topGradient.addColorStop(1, `rgba(${baseColor}, 0)`);    // Fades to transparent
+    ctx.fillStyle = topGradient;
+    ctx.fillRect(0, pipeTopY, width, thickness);
+
+    // Bottom Layer Gradient
+    const bottomGradient = ctx.createLinearGradient(0, pipeBottomY - thickness, 0, pipeBottomY);
+    bottomGradient.addColorStop(0, `rgba(${baseColor}, 0)`);
+    bottomGradient.addColorStop(1, `rgba(${baseColor}, 0.35)`);
+    ctx.fillStyle = bottomGradient;
+    ctx.fillRect(0, pipeBottomY - thickness, width, thickness);
+
+    // --- Animated Shimmering Edge ---
+    const waveAmplitude = 1.5;
+    const waveFrequency = 0.005;
+    const waveSpeed = 0.0005;
+
+    ctx.beginPath();
+    ctx.moveTo(0, pipeTopY + thickness);
+    for (let x = 0; x < width; x++) {
+        const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
+        ctx.lineTo(x, pipeTopY + thickness + yOffset);
+    }
+    ctx.strokeStyle = `rgba(${baseColor}, 0.5)`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(0, pipeBottomY - thickness);
+    for (let x = 0; x < width; x++) {
+        const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
+        ctx.lineTo(x, pipeBottomY - thickness - yOffset);
+    }
+    ctx.strokeStyle = `rgba(${baseColor}, 0.5)`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+}
+
+
+// --- Helper Functions for Drawing ---
+const drawTextWithBackground = (
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    textAlign: CanvasTextAlign = 'center',
+    id?: string
+) => {
+    let finalX = x;
+    let finalY = y;
+    if (id) {
+        const offset = annotationOffsets.get(id) || { x: 0, y: 0 };
+        finalX += offset.x;
+        finalY += offset.y;
+    }
+
+    ctx.font = 'bold 14px "Roboto", sans-serif';
+    ctx.textAlign = textAlign;
+    ctx.textBaseline = 'middle';
+
+    const textMetrics = ctx.measureText(text);
+    const padding = 5;
+    const textHeight = (textMetrics.actualBoundingBoxAscent || 14) + (textMetrics.actualBoundingBoxDescent || 2);
+    const rectHeight = textHeight + padding;
+    const rectWidth = textMetrics.width + padding * 2;
+    
+    let rectX;
+    if (textAlign === 'left') rectX = finalX - padding;
+    else if (textAlign === 'right') rectX = finalX - rectWidth + padding;
+    else rectX = finalX - rectWidth / 2;
+    
+    const rectY = finalY - rectHeight / 2;
+
+    ctx.fillStyle = 'rgba(22, 33, 62, 0.7)';
+    ctx.beginPath();
+    ctx.roundRect(rectX, rectY, rectWidth, rectHeight, 4);
+    ctx.fill();
+    
+    ctx.fillStyle = 'white';
+    ctx.fillText(text, finalX, finalY);
+    
+    const hitbox = { x: rectX, y: rectY, width: rectWidth, height: rectHeight };
+    if (id) {
+        currentFrameHitboxes.push({ id, rect: hitbox });
+    }
+    return hitbox;
+};
+
+const drawArrow = (ctx: CanvasRenderingContext2D, fromX: number, fromY: number, toX: number, toY: number, progress = 1.0, headLength = 8) => {
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const currentToX = fromX + dx * progress;
+    const currentToY = fromY + dy * progress;
+    const angle = Math.atan2(dy, dx);
+    
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.lineTo(currentToX, currentToY);
+    
+    if (progress === 1.0) {
+        ctx.moveTo(currentToX, currentToY);
+        ctx.lineTo(currentToX - headLength * Math.cos(angle - Math.PI / 6), currentToY - headLength * Math.sin(angle - Math.PI / 6));
+        ctx.moveTo(currentToX, currentToY);
+        ctx.lineTo(currentToX - headLength * Math.cos(angle + Math.PI / 6), currentToY - headLength * Math.sin(angle + Math.PI / 6));
+    }
+    ctx.stroke();
+};
+
+const drawFormattedText = (ctx: CanvasRenderingContext2D, lines: string[], startX: number, startY: number, lineHeight: number) => {
+    ctx.textBaseline = 'top';
+    let currentY = startY;
+
+    lines.forEach(line => {
+        let textToDraw = line;
+        let isBold = line.startsWith('<b>');
+        if (isBold) {
+            ctx.font = 'bold 12px "Roboto", sans-serif';
+            textToDraw = line.replace(/<b>|<\/b>/g, '');
+        } else {
+            ctx.font = '12px "Roboto", sans-serif';
+        }
+        
+        ctx.fillStyle = 'white';
+        ctx.fillText(textToDraw, startX, currentY);
+        currentY += lineHeight;
+    });
+}
+
+const drawInfoBox = (
+    ctx: CanvasRenderingContext2D,
+    title: string,
+    lines: string[],
+    easeOutProgress = 1.0,
+    id?: string
+) => {
+    let offsetX = 0;
+    let offsetY = 0;
+    let easeOffset = (1 - easeOutProgress) * -50;
+
+    if (id) {
+        const offset = annotationOffsets.get(id) || { x: 0, y: 0 };
+        offsetX = offset.x;
+        offsetY = offset.y;
+        // Stop animating if it has been dragged
+        if (annotationOffsets.has(id)) {
+            easeOffset = 0;
+        }
+    }
+
+    const boxWidth = 280;
+    const lineHeight = 18;
+    const padding = 12;
+    const titleHeight = 22;
+    const boxHeight = padding * 2 + titleHeight + (lines.length * lineHeight);
+    const boxX = 15 + easeOffset;
+    const boxY = ctx.canvas.clientHeight - boxHeight - 15;
+
+    const finalX = boxX + offsetX;
+    const finalY = boxY + offsetY;
+
+
+    ctx.fillStyle = 'rgba(22, 33, 62, 0.85)';
+    ctx.strokeStyle = '#e94560';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(finalX, finalY, boxWidth, boxHeight, 8);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#e94560';
+    ctx.font = 'bold 13px "Roboto", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(title, finalX + padding, finalY + padding);
+    
+    drawFormattedText(ctx, lines, finalX + padding, finalY + padding + titleHeight, lineHeight);
+
+    const hitbox = { x: finalX, y: finalY, width: boxWidth, height: boxHeight };
+    if (id) {
+        currentFrameHitboxes.push({ id, rect: hitbox });
+    }
+    return hitbox;
+};
+
+
+/**
+ * Draws the "Explain" overlay for the full pipe view.
+ */
+function drawExplanationOverlay(
+    ctx: CanvasRenderingContext2D,
+    re: number,
+    uiFlowState: keyof typeof flowDescriptions,
+    physicsFlowState: keyof typeof flowDescriptions,
+    time: number
+) {
+    if (!showExplanation) return;
+
+    const ANIMATION_DURATION = 500; // ms
+    const elapsed = time - explanationAnimationStartTimestamp!;
+    const progress = Math.min(elapsed / ANIMATION_DURATION, 1.0);
+    const easeOutProgress = 1 - Math.pow(1 - progress, 3); // Ease-out cubic for smooth appearance
+
+    const width = ctx.canvas.clientWidth;
+    const height = ctx.canvas.clientHeight;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    ctx.save();
+    ctx.globalAlpha = easeOutProgress;
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 1.5;
+
+    if (uiFlowState === 'laminar' || uiFlowState === 'transition') {
+        drawTextWithBackground(ctx, 'Smooth, parallel layers', 100, 40, 'center');
+        drawArrow(ctx, 100, 55, 100, 85, progress);
+
+        drawTextWithBackground(ctx, 'Max Velocity at Center', centerX, centerY - 40, 'center');
+        drawArrow(ctx, centerX, centerY - 30, centerX, centerY, progress);
+
+        drawTextWithBackground(ctx, 'Velocity ≈ 0 at Wall', width - 100, WALL_BUFFER + 25, 'center');
+        drawArrow(ctx, width - 100, WALL_BUFFER + 35, width - 100, WALL_BUFFER + 5, progress);
+
+        drawInfoBox(ctx, 'Laminar Flow Impact', [
+            '<b>Friction Driver:</b> Fluid Viscosity',
+            '<b>Pressure Drop:</b> Minimal & Predictable',
+            'Flow is stable and predictable, with low energy loss.',
+            ' ',
+            '∙ Note: Darcy f_D = 4 x Fanning f'
+        ], easeOutProgress);
+    } else { // Turbulent states
+        const eddyX = centerX + 80;
+        const eddyY = centerY + 30;
+        const eddyRadius = 20;
+
+        drawTextWithBackground(ctx, 'Chaotic Eddies & Mixing', eddyX, eddyY - eddyRadius - 25, 'center');
+        drawArrow(ctx, eddyX, eddyY - eddyRadius - 15, eddyX, eddyY - eddyRadius, progress);
+        ctx.beginPath();
+        ctx.arc(eddyX, eddyY, eddyRadius * progress, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        drawTextWithBackground(ctx, 'Flatter Velocity Profile', centerX, height - 40, 'center');
+        ctx.beginPath();
+        const arrowStart = centerX - 70;
+        ctx.moveTo(arrowStart, height - 25);
+        ctx.lineTo(arrowStart + 140 * progress, height - 25);
+        ctx.stroke();
+
+        const boundaryLayerThickness = mapLog(re, 2301, 20000000, 30, 5);
+        const boundaryLayerYTop = WALL_BUFFER + boundaryLayerThickness;
+
+        if (physicsFlowState === 'fully-turbulent') {
+            drawTextWithBackground(ctx, 'Thin Boundary Layer', 100, boundaryLayerYTop + 20, 'center');
+            drawArrow(ctx, 100, boundaryLayerYTop + 15, 100, boundaryLayerYTop - 5, progress);
+            drawInfoBox(ctx, 'Complete Turbulence Impact', [
+                '<b>Friction Driver:</b> Pipe Roughness',
+                '<b>Pressure Drop:</b> Maximum',
+                'Friction is now independent of Re. Further increases',
+                'in velocity do not make the flow "smoother".',
+                '∙ Note: Darcy f_D = 4 x Fanning f'
+            ], easeOutProgress);
+        } else { // Partially turbulent
+            drawTextWithBackground(ctx, 'Thicker Boundary Layer', 100, boundaryLayerYTop + 20, 'center');
+            drawArrow(ctx, 100, boundaryLayerYTop + 15, 100, boundaryLayerYTop - 5, progress);
+            drawInfoBox(ctx, 'Partial Turbulence Impact', [
+                '<b>Friction Driver:</b> Re & Roughness',
+                '<b>Pressure Drop:</b> High',
+                'The boundary layer partially shields the main flow from',
+                'the pipe wall, but mixing still causes high energy loss.',
+                '∙ Note: Darcy f_D = 4 x Fanning f'
+            ], easeOutProgress);
+        }
+    }
+    ctx.restore();
+}
+
+/**
+ * Draws the specialized close-up view of the boundary layer.
+ */
+function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRoughness: number) {
+    const width = ctx.canvas.clientWidth;
+    const height = ctx.canvas.clientHeight;
+
+    const wallBaseY = height * 0.8;
+    const zoomFactor = 2000; // Exaggerate roughness for visibility
+    const roughnessHeight = absRoughness * zoomFactor;
+
+    // The viscous sublayer gets thinner as Re increases.
+    const sublayerThickness = mapLog(re, 2301, 20000000, 80, 5);
+    const sublayerTopY = wallBaseY - sublayerThickness;
+    
+    // --- Draw Wall & Sublayer ---
+    ctx.fillStyle = '#4a5568';
+    ctx.beginPath();
+    ctx.moveTo(0, height);
+    ctx.lineTo(0, wallBaseY);
+    for (let x = 0; x < width; x++) {
+        ctx.lineTo(x, wallBaseY - roughnessProfile[x] * roughnessHeight);
+    }
+    ctx.lineTo(width, wallBaseY);
+    ctx.lineTo(width, height);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Draw viscous sublayer
+    const sublayerGradient = ctx.createLinearGradient(0, sublayerTopY, 0, wallBaseY);
+    sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0)');
+    sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.5)');
+    ctx.fillStyle = sublayerGradient;
+    ctx.fillRect(0, sublayerTopY, width, sublayerThickness);
+    
+    // --- Draw Annotations ---
+    ctx.save();
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 1.5;
+
+    const isSmooth = sublayerThickness > roughnessHeight;
+
+    if (isSmooth) {
+        drawInfoBox(ctx, 'Hydraulically Smooth Flow', [
+            'The viscous sublayer is thicker than the roughness',
+            'elements, effectively "hiding" them from the main flow.',
+            '<b>Friction Driver:</b> Fluid Viscosity (Re)',
+            'Particles flow smoothly over the buffered surface.'
+        ], 1.0, 'boundary-infobox');
+
+        const textRect = drawTextWithBackground(ctx, 'Roughness elements buried in sublayer', width / 2, wallBaseY - roughnessHeight - 20, 'center', 'boundary-text-1');
+        drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
+    } else {
+        drawInfoBox(ctx, 'Rough Flow', [
+            'Roughness elements are taller than the viscous sublayer,',
+            'piercing into the faster-moving turbulent flow.',
+            '<b>Friction Driver:</b> Pipe Roughness (ε)',
+            'Collisions create eddies, causing significant energy loss.'
+        ], 1.0, 'boundary-infobox');
+        const textRect = drawTextWithBackground(ctx, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - roughnessHeight - 40, 'center', 'boundary-text-1');
+        drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - roughnessHeight + 5);
+    }
+    
+    // Label sublayer
+    const sublayerRect = drawTextWithBackground(ctx, 'Viscous Sublayer', 150, sublayerTopY + sublayerThickness / 2, 'center', 'boundary-sublayer-label');
+    const arrowFromX = sublayerRect.x + sublayerRect.width / 2;
+    drawArrow(ctx, arrowFromX, sublayerRect.y, arrowFromX, sublayerTopY);
+    drawArrow(ctx, arrowFromX, sublayerRect.y + sublayerRect.height, arrowFromX, wallBaseY);
+
+    ctx.restore();
+}
+
+/**
+ * Draws the extreme close-up view of the pipe wall.
+ */
+function drawPipeWallDetailView(ctx: CanvasRenderingContext2D, re: number, absRoughness: number) {
+    const width = ctx.canvas.clientWidth;
+    const height = ctx.canvas.clientHeight;
+
+    const zoomFactor = 10000; // Extreme zoom on roughness
+    const roughnessHeight = absRoughness * zoomFactor;
+    const wallBaseY = height * 0.75; // Wall takes up most of the view
+
+    const sublayerThickness = mapLog(re, 2301, 20000000, 150, 10); // Thicker on screen for visibility
+    const sublayerTopY = wallBaseY - sublayerThickness;
+
+    // --- Draw Wall & Sublayer ---
+    ctx.fillStyle = '#3b4453'; // Slightly lighter wall color for detail
+    ctx.fillRect(0, wallBaseY, width, height - wallBaseY);
+    ctx.fillStyle = '#4a5568';
+    ctx.beginPath();
+    ctx.moveTo(0, height);
+    ctx.lineTo(0, wallBaseY);
+    for (let x = 0; x < width; x++) {
+        ctx.lineTo(x, wallBaseY - roughnessProfile[x] * roughnessHeight);
+    }
+    ctx.lineTo(width, wallBaseY);
+    ctx.lineTo(width, height);
+    ctx.closePath();
+    ctx.fill();
+
+    // Draw viscous sublayer
+    const sublayerGradient = ctx.createLinearGradient(0, sublayerTopY, 0, wallBaseY);
+    sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0)');
+    sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.5)');
+    ctx.fillStyle = sublayerGradient;
+    ctx.fillRect(0, sublayerTopY, width, height - sublayerTopY);
+
+    // --- Draw Annotations ---
+    ctx.save();
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 1.5;
+
+    const isSmooth = sublayerThickness > roughnessHeight;
+    const roughnessPeakX = width / 2;
+    const roughnessPeakY = wallBaseY - roughnessProfile[Math.floor(roughnessPeakX)] * roughnessHeight;
+
+    if (isSmooth) {
+        drawInfoBox(ctx, 'Wall View: Hydraulically Smooth', [
+            '<b>Condition:</b> Viscous Sublayer > Roughness Height (ε)',
+            'The sublayer engulfs the wall texture, creating a "smooth"',
+            'buffer. The main flow does not interact with the wall, and',
+            'friction is driven primarily by fluid viscosity.',
+            '∙ Particles glide smoothly over the buffered zone.'
+        ], 1.0, 'wall-infobox');
+        
+        const peakRect = drawTextWithBackground(ctx, 'Roughness Peak (ε)', roughnessPeakX, roughnessPeakY - 20, 'center', 'wall-peak-label');
+        drawArrow(ctx, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, roughnessPeakX, roughnessPeakY);
+        
+        const sublayerRect = drawTextWithBackground(ctx, 'Viscous Sublayer completely covers peaks', 180, sublayerTopY - 20, 'center', 'wall-sublayer-label');
+        drawArrow(ctx, sublayerRect.x + sublayerRect.width / 2, sublayerRect.y + sublayerRect.height, 180, sublayerTopY);
+    } else {
+        drawInfoBox(ctx, 'Wall View: Rough Flow', [
+            '<b>Condition:</b> Roughness Height (ε) > Viscous Sublayer',
+            'Peaks protrude into the flow, creating form drag and chaotic',
+            'eddies. This significantly increases energy loss.',
+            '∙ Friction is dominated by physical obstructions.',
+            '∙ Particles are trapped in valleys, dissipating energy.'
+        ], 1.0, 'wall-infobox');
+        
+        const peakRect = drawTextWithBackground(ctx, 'Exposed Peak creates drag', roughnessPeakX, roughnessPeakY - 20, 'center', 'wall-peak-label');
+        drawArrow(ctx, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, roughnessPeakX, roughnessPeakY);
+
+        const sublayerRect = drawTextWithBackground(ctx, 'Thin sublayer fails to cover wall', 150, wallBaseY - sublayerThickness - 20, 'center', 'wall-sublayer-label');
+        drawArrow(ctx, sublayerRect.x + sublayerRect.width / 2, sublayerRect.y + sublayerRect.height, 150, wallBaseY - sublayerThickness);
+    }
+    ctx.restore();
+}
+
+
+
 function updateIndicatorsAndDashboard(re: number, absRoughness: number, diameter: number, 
                                       snappedRelativeRoughness: number, activeCurveId: string,
                                       colebrookFriction: number) {
@@ -486,44 +1110,62 @@ function updateIndicatorsAndDashboard(re: number, absRoughness: number, diameter
             indicatorContainer.appendChild(indicator);
         }
     });
+
+    // Update Friction Contribution Meter
+    const contribution = calculateFrictionContribution(re, relativeRoughness);
+
+    const viscosityBar = document.getElementById('viscosity-bar') as HTMLDivElement;
+    const roughnessBar = document.getElementById('roughness-bar') as HTMLDivElement;
+    const viscosityLabel = document.getElementById('viscosity-percent-label') as HTMLSpanElement;
+    const roughnessLabel = document.getElementById('roughness-percent-label') as HTMLSpanElement;
+
+    if (viscosityBar && roughnessBar && viscosityLabel && roughnessLabel) {
+        viscosityBar.style.width = `${contribution.viscosity}%`;
+        roughnessBar.style.width = `${contribution.roughness}%`;
+        
+        viscosityLabel.textContent = `${contribution.viscosity.toFixed(0)}%`;
+        roughnessLabel.textContent = `${contribution.roughness.toFixed(0)}%`;
+        
+        viscosityBar.classList.toggle('label-hidden', contribution.viscosity < 20);
+        roughnessBar.classList.toggle('label-hidden', contribution.roughness < 20);
+    }
 }
 
-// --- Animation Loop ---
-function animate() {
-    currentRe += (targetRe - currentRe) * LERP_FACTOR;
-    const trueRelativeRoughness = absoluteRoughnessIN / currentPipeDiameterIN;
+// --- Animation Loop Handlers ---
+function animateFullPipeView(time: number) {
+     const trueRelativeRoughness = absoluteRoughnessIN / currentPipeDiameterIN;
+     const physicsProps = getFlowProperties(currentRe, trueRelativeRoughness);
+     currentF = physicsProps.friction;
 
-    // Determine snapped roughness for UI consistency (dot on line)
-    const closestRoughnessLevel = ROUGHNESS_LEVELS.reduce((prev, curr) =>
-        (Math.abs(curr.value - trueRelativeRoughness) < Math.abs(prev.value - trueRelativeRoughness) ? curr : prev)
-    );
-    const snappedRelativeRoughness = closestRoughnessLevel.value;
-    const activeCurveId = closestRoughnessLevel.id;
+     ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+     drawPipe3D();
+     drawBoundaryLayer(ctx, currentRe, time);
 
-    // Get physics properties using the true roughness for the simulation
-    const physicsProps = getFlowProperties(currentRe, trueRelativeRoughness);
-    currentF = physicsProps.friction;
-    
-    // Get UI properties using the snapped roughness for the diagram
-    const uiProps = getFlowProperties(currentRe, snappedRelativeRoughness);
-    
-    // --- Update all UI elements from the synchronized data ---
-    metricRe.textContent = Math.round(currentRe).toLocaleString();
-    
-    // Update main description and metrics panel with the current flow state
-    const { title, text } = flowDescriptions[uiProps.state];
-    flowTitle.textContent = title;
-    flowText.textContent = text;
-    metricState.textContent = title;
-    
-    // Pass all necessary info to the dashboard/indicator updater
-    updateIndicatorsAndDashboard(currentRe, absoluteRoughnessIN, currentPipeDiameterIN, 
-                                 snappedRelativeRoughness, activeCurveId, uiProps.friction);
-    
+     particles.forEach(p => {
+         updateParticleInFullView(p, currentRe, currentF);
+         ctx.beginPath();
+         ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+         ctx.fillStyle = p.color;
+         ctx.globalAlpha = p.alpha;
+         ctx.fill();
+     });
+     ctx.globalAlpha = 1.0;
+
+     drawExplanationOverlay(ctx, currentRe, physicsProps.state, physicsProps.state, time);
+}
+
+function animateDetailView(time: number) {
+    currentFrameHitboxes = [];
     ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-    drawPipe3D();
+
+    const zoomFactor = 2000;
+    const roughnessHeight = absoluteRoughnessIN * zoomFactor;
+    const sublayerThickness = mapLog(currentRe, 2301, 20000000, 80, 5);
+    
+    drawBoundaryDetailView(ctx, currentRe, absoluteRoughnessIN);
+
     particles.forEach(p => {
-        updateParticle(p, currentRe, currentF);
+        updateParticleInDetailView(p, currentRe, roughnessHeight, sublayerThickness);
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
@@ -531,6 +1173,65 @@ function animate() {
         ctx.fill();
     });
     ctx.globalAlpha = 1.0;
+}
+
+function animatePipeWallDetailView(time: number) {
+    currentFrameHitboxes = [];
+    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+
+    const zoomFactor = 10000;
+    const roughnessHeight = absoluteRoughnessIN * zoomFactor;
+    const sublayerThickness = mapLog(currentRe, 2301, 20000000, 150, 10);
+    
+    drawPipeWallDetailView(ctx, currentRe, absoluteRoughnessIN);
+
+    particles.forEach(p => {
+        updateParticleInWallDetailView(p, currentRe, roughnessHeight, sublayerThickness);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.alpha;
+        ctx.fill();
+    });
+    ctx.globalAlpha = 1.0;
+}
+
+
+function animate() {
+    const time = performance.now();
+
+    currentRe += (targetRe - currentRe) * LERP_FACTOR;
+    const trueRelativeRoughness = absoluteRoughnessIN / currentPipeDiameterIN;
+
+    const closestRoughnessLevel = ROUGHNESS_LEVELS.reduce((prev, curr) =>
+        (Math.abs(curr.value - trueRelativeRoughness) < Math.abs(prev.value - trueRelativeRoughness) ? curr : prev)
+    );
+    const snappedRelativeRoughness = closestRoughnessLevel.value;
+    const activeCurveId = closestRoughnessLevel.id;
+
+    const uiProps = getFlowProperties(currentRe, snappedRelativeRoughness);
+    
+    metricRe.textContent = Math.round(currentRe).toLocaleString();
+    const { title, text } = flowDescriptions[uiProps.state];
+    flowTitle.textContent = title;
+    flowText.textContent = text;
+    metricState.textContent = title;
+    
+    updateIndicatorsAndDashboard(currentRe, absoluteRoughnessIN, currentPipeDiameterIN, 
+                                 snappedRelativeRoughness, activeCurveId, uiProps.friction);
+    
+    switch(currentViewMode) {
+        case 'wall':
+            animatePipeWallDetailView(time);
+            break;
+        case 'boundary':
+            animateDetailView(time);
+            break;
+        case 'full':
+        default:
+            animateFullPipeView(time);
+            break;
+    }
 
     let targetProfile = calculateProfile(currentRe, currentF, velocityCanvas.clientHeight);
     if (currentProfile.length !== targetProfile.length) {
@@ -551,28 +1252,49 @@ function handleCanvasResize() {
     setupCanvas(canvas);
     setupCanvas(velocityCanvas);
     initParticles();
-    // Recalculate the profile based on the new canvas height.
     currentProfile = calculateProfile(currentRe, currentF, velocityCanvas.clientHeight);
     animate();
 }
 
-function updateActiveButton(activeBtnId?: string) {
-    [laminarBtn, partiallyTurbulentBtn, fullyTurbulentBtn].forEach(btn => {
-        if (btn.id === activeBtnId) {
-            btn.classList.add('active');
-            btn.setAttribute('aria-pressed', 'true');
-        } else {
-            btn.classList.remove('active');
-            btn.setAttribute('aria-pressed', 'false');
-        }
+function updateViewModeUI() {
+    // Manage visibility of the Pipe Wall Detail button
+    pipeWallDetailBtn.classList.toggle('hidden', currentViewMode === 'full');
+
+    // Manage active states of all buttons
+    const activePreset = (Object.keys(presetReValues) as FlowPreset[]).find(p => presetReValues[p] === targetRe);
+    
+    laminarBtn.classList.toggle('active', currentViewMode === 'full' && activePreset === 'laminar');
+    partiallyTurbulentBtn.classList.toggle('active', currentViewMode === 'full' && activePreset === 'partially-turbulent');
+    fullyTurbulentBtn.classList.toggle('active', currentViewMode === 'full' && activePreset === 'fully-turbulent');
+    boundaryDetailBtn.classList.toggle('active', currentViewMode === 'boundary');
+    pipeWallDetailBtn.classList.toggle('active', currentViewMode === 'wall');
+
+    // Set aria-pressed for all buttons
+    [laminarBtn, partiallyTurbulentBtn, fullyTurbulentBtn, boundaryDetailBtn, pipeWallDetailBtn].forEach(btn => {
+        btn.setAttribute('aria-pressed', btn.classList.contains('active').toString());
     });
+
+    // Manage explain button state
+    explainBtn.disabled = currentViewMode !== 'full';
+    if (explainBtn.disabled) {
+        showExplanation = false;
+        explainBtn.classList.remove('active');
+        explainBtn.setAttribute('aria-checked', 'false');
+        explanationAnimationStartTimestamp = null;
+    }
 }
+
 
 function setPreset(flowType: FlowPreset) {
     targetRe = presetReValues[flowType];
     reynoldsSlider.value = Math.log10(targetRe).toString();
     reynoldsInput.value = Math.round(targetRe).toString();
-    updateActiveButton(`${flowType}Btn`);
+    
+    if (currentViewMode !== 'full') {
+        currentViewMode = 'full';
+        initParticles();
+    }
+    updateViewModeUI();
 }
 
 function updateRelativeRoughnessInput() {
@@ -687,11 +1409,116 @@ function initVerticalResizer() {
     }
 }
 
+function initInfoTabs() {
+    const tabs = [diagramTabBtn, aboutTabBtn];
+    const panels = [diagramTabContent, aboutTabContent];
+
+    const switchTab = (tabToActivate: HTMLButtonElement) => {
+        const panelToActivate = document.getElementById(tabToActivate.getAttribute('aria-controls')!);
+
+        tabs.forEach(tab => {
+            const isMatch = tab === tabToActivate;
+            tab.classList.toggle('active', isMatch);
+            tab.setAttribute('aria-selected', isMatch.toString());
+        });
+
+        panels.forEach(panel => {
+            const isMatch = panel === panelToActivate;
+            panel.classList.toggle('hidden', !isMatch);
+        });
+    };
+
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => switchTab(tab));
+    });
+}
+
+function initDragHandler() {
+    const onCanvasMouseDown = (e: MouseEvent) => {
+        if (currentViewMode === 'full') return;
+        
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.clientWidth / rect.width;
+        const scaleY = canvas.clientHeight / rect.height;
+        const mouseX = (e.clientX - rect.left) * scaleX;
+        const mouseY = (e.clientY - rect.top) * scaleY;
+
+        // Check for hit on draggable items, iterating backwards for Z-index
+        for (let i = currentFrameHitboxes.length - 1; i >= 0; i--) {
+            const item = currentFrameHitboxes[i];
+            const isHit = mouseX >= item.rect.x && mouseX <= item.rect.x + item.rect.width &&
+                          mouseY >= item.rect.y && mouseY <= item.rect.y + item.rect.height;
+            
+            if (isHit) {
+                isDragging = true;
+                draggedAnnotationId = item.id;
+                dragStartPos = { x: mouseX, y: mouseY };
+                dragStartOffset = annotationOffsets.get(item.id) || { x: 0, y: 0 };
+                canvas.style.cursor = 'grabbing';
+                e.preventDefault();
+                return;
+            }
+        }
+    };
+
+    const onDocumentMouseMove = (e: MouseEvent) => {
+        if (!isDragging || !draggedAnnotationId) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.clientWidth / rect.width;
+        const scaleY = canvas.clientHeight / rect.height;
+        const mouseX = (e.clientX - rect.left) * scaleX;
+        const mouseY = (e.clientY - rect.top) * scaleY;
+
+        const deltaX = mouseX - dragStartPos.x;
+        const deltaY = mouseY - dragStartPos.y;
+
+        const newOffset = {
+            x: dragStartOffset.x + deltaX,
+            y: dragStartOffset.y + deltaY,
+        };
+        annotationOffsets.set(draggedAnnotationId, newOffset);
+    };
+
+    const onDocumentMouseUp = () => {
+        isDragging = false;
+        draggedAnnotationId = null;
+        canvas.style.cursor = 'default';
+    };
+
+    const onCanvasMouseMove = (e: MouseEvent) => {
+        if (isDragging || currentViewMode === 'full') return;
+
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.clientWidth / rect.width;
+        const scaleY = canvas.clientHeight / rect.height;
+        const mouseX = (e.clientX - rect.left) * scaleX;
+        const mouseY = (e.clientY - rect.top) * scaleY;
+
+        let hovering = false;
+        for (const item of currentFrameHitboxes) {
+            if (mouseX >= item.rect.x && mouseX <= item.rect.x + item.rect.width &&
+                mouseY >= item.rect.y && mouseY <= item.rect.y + item.rect.height) {
+                hovering = true;
+                break;
+            }
+        }
+        canvas.style.cursor = hovering ? 'grab' : 'default';
+    };
+
+    canvas.addEventListener('mousedown', onCanvasMouseDown);
+    document.addEventListener('mousemove', onDocumentMouseMove);
+    document.addEventListener('mouseup', onDocumentMouseUp);
+    canvas.addEventListener('mousemove', onCanvasMouseMove);
+}
+
 reynoldsSlider.addEventListener('input', (e) => {
     const logVal = parseFloat((e.target as HTMLInputElement).value);
     targetRe = Math.pow(10, logVal);
     reynoldsInput.value = Math.round(targetRe).toString();
-    updateActiveButton();
+    if (currentViewMode === 'full') {
+      updateViewModeUI();
+    }
 });
 
 reynoldsInput.addEventListener('change', (e) => {
@@ -705,7 +1532,9 @@ reynoldsInput.addEventListener('change', (e) => {
     targetRe = val;
     reynoldsInput.value = targetRe.toString();
     reynoldsSlider.value = Math.log10(targetRe).toString();
-    updateActiveButton();
+    if (currentViewMode === 'full') {
+      updateViewModeUI();
+    }
 });
 
 
@@ -756,6 +1585,44 @@ relRoughnessInput.addEventListener('change', (e) => {
 laminarBtn.addEventListener('click', () => setPreset('laminar'));
 partiallyTurbulentBtn.addEventListener('click', () => setPreset('partially-turbulent'));
 fullyTurbulentBtn.addEventListener('click', () => setPreset('fully-turbulent'));
+
+boundaryDetailBtn.addEventListener('click', () => {
+    if (currentViewMode === 'full') {
+        currentViewMode = 'boundary';
+        // Bump Re if it's too low for a meaningful detail view
+        if (targetRe < 2301) {
+            targetRe = presetReValues['partially-turbulent'];
+            reynoldsSlider.value = Math.log10(targetRe).toString();
+            reynoldsInput.value = Math.round(targetRe).toString();
+        }
+    } else {
+        currentViewMode = 'full';
+    }
+    updateViewModeUI();
+    initParticles();
+});
+
+pipeWallDetailBtn.addEventListener('click', () => {
+    if (currentViewMode === 'boundary') {
+        currentViewMode = 'wall';
+    } else if (currentViewMode === 'wall') {
+        currentViewMode = 'boundary';
+    }
+    updateViewModeUI();
+    initParticles();
+});
+
+
+explainBtn.addEventListener('click', () => {
+    showExplanation = !showExplanation;
+    explainBtn.classList.toggle('active', showExplanation);
+    explainBtn.setAttribute('aria-checked', String(showExplanation));
+    if (showExplanation) {
+        explanationAnimationStartTimestamp = performance.now();
+    } else {
+        explanationAnimationStartTimestamp = null;
+    }
+});
 
 colebrookToggle.addEventListener('change', (e) => {
     const isChecked = (e.target as HTMLInputElement).checked;
@@ -812,6 +1679,8 @@ function main() {
     
     initHorizontalResizer();
     initVerticalResizer();
+    initInfoTabs();
+    initDragHandler();
     updateRelativeRoughnessInput();
     setPreset('laminar');
 

@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive Natural Gas Pipeline Flow Simulation</title>
+    <title>Pipeline Dynamics Simulator</title>
     <link rel="stylesheet" href="index.css">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌊</text></svg>">
 <link rel="stylesheet" href="/index.css">
@@ -12,8 +12,8 @@
 <body>
     <div id="app">
         <header>
-            <h1>Natural Gas Pipeline Flow Simulator</h1>
-            <p class="credit">Written by Tim Bickford (Rev-1.0) 7/23/2025</p>
+            <h1>Pipeline Dynamics Simulator</h1>
+            <p class="credit">Written by Tim Bickford (Rev-2.0) 7/23/2025</p>
         </header>
         <main>
             <div class="layout-column" id="controls-column">
@@ -22,6 +22,8 @@
                         <button id="laminarBtn" class="control-btn active" aria-pressed="true">Laminar</button>
                         <button id="partiallyTurbulentBtn" class="control-btn" aria-pressed="false">Partially Turbulent</button>
                         <button id="fullyTurbulentBtn" class="control-btn" aria-pressed="false">Fully Turbulent</button>
+                        <button id="boundaryDetailBtn" class="control-btn" aria-pressed="false">Boundary Layer Detail</button>
+                        <button id="pipeWallDetailBtn" class="control-btn hidden" aria-pressed="false">Pipe Wall Detail</button>
                     </div>
                     <div class="slider-controls">
                         <div id="reynolds-control-container" class="slider-container">
@@ -34,9 +36,11 @@
                          <div id="pipe-diameter-control-container" class="slider-container">
                             <div class="slider-header">
                                 <label for="pipe-diameter-select">Nominal Pipe Diameter</label>
+                                <select id="pipe-diameter-select" class="value-select"></select>
+                            </div>
+                            <div class="info-span-container">
                                 <span id="pipe-diameter-value"></span>
                             </div>
-                            <select id="pipe-diameter-select"></select>
                         </div>
                         <div id="abs-roughness-control-container" class="slider-container">
                              <div class="slider-header">
@@ -84,7 +88,10 @@
             <div id="resizable-container">
                 <div class="layout-column" id="viz-column">
                     <div class="canvas-container pipe-container">
-                        <h2 class="canvas-title">Particle Flow</h2>
+                        <div class="canvas-header">
+                            <h2 class="canvas-title">Particle Flow</h2>
+                            <button id="explain-btn" class="explain-btn" role="switch" aria-checked="false" title="Toggle explanation overlay">Explain</button>
+                        </div>
                         <canvas id="pipelineCanvas"></canvas>
                     </div>
                     <div id="vertical-resizer" role="separator" aria-orientation="horizontal" aria-controls="pipelineCanvas velocityProfileCanvas"></div>
@@ -97,91 +104,260 @@
                 <div id="resizer" role="separator" aria-orientation="vertical" aria-controls="viz-column info-column"></div>
 
                 <div class="layout-column" id="info-column">
-                     <div id="moody-diagram-container">
-                        <h2 id="moody-title">Moody Diagram</h2>
-                        <div class="diagram-wrapper">
-                            <svg viewBox="0 0 500 365" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="10" role="img" aria-labelledby="moodyTitle">
-                                <title id="moodyTitle">Moody Diagram showing friction factor versus Reynolds number</title>
-                                <style>
-                                    .label { font-size: 8px; fill: #e0e0e0; }
-                                    .axis-label { font-size: 10px; font-weight: bold; fill: #e0e0e0; }
-                                    .grid-line { stroke: #444; stroke-width: 0.5; }
-                                    .grid-line-dashed { stroke: #444; stroke-width: 0.5; stroke-dasharray: 2 2; }
-                                    .region-label { font-size: 9px; fill: #aaa; font-style: italic; }
-                                </style>
-                                <rect width="500" height="365" fill="#16213e"/>
+                    <div class="info-tabs">
+                        <button id="diagram-tab-btn" class="info-tab-btn active" role="tab" aria-selected="true" aria-controls="diagram-tab-content">Diagram &amp; Metrics</button>
+                        <button id="about-tab-btn" class="info-tab-btn" role="tab" aria-selected="false" aria-controls="about-tab-content">About &amp; Theory</button>
+                    </div>
+                    
+                    <div id="diagram-tab-content" role="tabpanel" aria-labelledby="diagram-tab-btn">
+                         <div id="moody-diagram-container">
+                            <h2 id="moody-title">Moody Diagram</h2>
+                            <div class="diagram-wrapper">
+                                <svg viewBox="0 0 500 365" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="10" role="img" aria-labelledby="moodyTitle">
+                                    <title id="moodyTitle">Moody Diagram showing friction factor versus Reynolds number</title>
+                                    <style>
+                                        .label { font-size: 8px; fill: #e0e0e0; }
+                                        .axis-label { font-size: 10px; font-weight: bold; fill: #e0e0e0; }
+                                        .grid-line { stroke: #444; stroke-width: 0.5; }
+                                        .grid-line-dashed { stroke: #444; stroke-width: 0.5; stroke-dasharray: 2 2; }
+                                        .region-label { font-size: 9px; fill: #aaa; font-style: italic; }
+                                    </style>
+                                    <rect width="500" height="365" fill="#16213e"/>
 
-                                <!-- Grid -->
-                                <g class="grid">
-                                    <!-- Horizontal grid lines -->
-                                    <path class="grid-line" d="M60 304 L480 304" /> <path class="grid-line" d="M60 276 L480 276" /> <path class="grid-line" d="M60 247 L480 247" /> <path class="grid-line" d="M60 219 L480 219" /> <path class="grid-line" d="M60 190 L480 190" /> <path class="grid-line" d="M60 162 L480 162" /> <path class="grid-line" d="M60 148 L480 148" /> <path class="grid-line" d="M60 134 L480 134" /> <path class="grid-line" d="M60 105 L480 105" /> <path class="grid-line" d="M60 88 L480 88" />
-                                    <!-- Vertical major grid lines for new scale -->
-                                    <path class="grid-line" d="M60 20 L60 330" /> <path class="grid-line" d="M157 20 L157 330" /> <path class="grid-line" d="M255 20 L255 330" /> <path class="grid-line" d="M353 20 L353 330" /> <path class="grid-line" d="M451 20 L451 330" /> <path class="grid-line" d="M480 20 L480 330" />
-                                    <!-- Dashed minor grid lines (approximated for new scale) -->
-                                    <path class="grid-line-dashed" d="M89 20 L89 330" /><path class="grid-line-dashed" d="M106 20 L106 330" /><path class="grid-line-dashed" d="M119 20 L119 330" /><path class="grid-line-dashed" d="M129 20 L129 330" /><path class="grid-line-dashed" d="M136 20 L136 330" /><path class="grid-line-dashed" d="M143 20 L143 330" /><path class="grid-line-dashed" d="M148 20 L148 330" />
-                                    <path class="grid-line-dashed" d="M186 20 L186 330" /><path class="grid-line-dashed" d="M203 20 L203 330" /><path class="grid-line-dashed" d="M216 20 L216 330" /><path class="grid-line-dashed" d="M226 20 L226 330" /><path class="grid-line-dashed" d="M234 20 L234 330" /><path class="grid-line-dashed" d="M241 20 L241 330" /><path class="grid-line-dashed" d="M247 20 L247 330" />
-                                    <path class="grid-line-dashed" d="M284 20 L284 330" /><path class="grid-line-dashed" d="M301 20 L301 330" /><path class="grid-line-dashed" d="M314 20 L314 330" /><path class="grid-line-dashed" d="M324 20 L324 330" /><path class="grid-line-dashed" d="M333 20 L333 330" /><path class="grid-line-dashed" d="M340 20 L340 330" /><path class="grid-line-dashed" d="M346 20 L346 330" />
-                                    <path class="grid-line-dashed" d="M382 20 L382 330" /><path class="grid-line-dashed" d="M399 20 L399 330" /><path class="grid-line-dashed" d="M412 20 L412 330" /><path class="grid-line-dashed" d="M422 20 L422 330" /><path class="grid-line-dashed" d="M430 20 L430 330" /><path class="grid-line-dashed" d="M437 20 L437 330" /><path class="grid-line-dashed" d="M443 20 L443 330" />
-                                    <rect x="95" y="20" width="24" height="310" fill="rgba(100,100,100,0.1)" />
-                                </g>
+                                    <!-- Grid -->
+                                    <g class="grid">
+                                        <!-- Horizontal grid lines -->
+                                        <path class="grid-line" d="M60 304 L480 304" /> <path class="grid-line" d="M60 276 L480 276" /> <path class="grid-line" d="M60 247 L480 247" /> <path class="grid-line" d="M60 219 L480 219" /> <path class="grid-line" d="M60 190 L480 190" /> <path class="grid-line" d="M60 162 L480 162" /> <path class="grid-line" d="M60 148 L480 148" /> <path class="grid-line" d="M60 134 L480 134" /> <path class="grid-line" d="M60 105 L480 105" /> <path class="grid-line" d="M60 88 L480 88" />
+                                        <!-- Vertical major grid lines for new scale -->
+                                        <path class="grid-line" d="M60 20 L60 330" /> <path class="grid-line" d="M157 20 L157 330" /> <path class="grid-line" d="M255 20 L255 330" /> <path class="grid-line" d="M353 20 L353 330" /> <path class="grid-line" d="M451 20 L451 330" /> <path class="grid-line" d="M480 20 L480 330" />
+                                        <!-- Dashed minor grid lines (approximated for new scale) -->
+                                        <path class="grid-line-dashed" d="M89 20 L89 330" /><path class="grid-line-dashed" d="M106 20 L106 330" /><path class="grid-line-dashed" d="M119 20 L119 330" /><path class="grid-line-dashed" d="M129 20 L129 330" /><path class="grid-line-dashed" d="M136 20 L136 330" /><path class="grid-line-dashed" d="M143 20 L143 330" /><path class="grid-line-dashed" d="M148 20 L148 330" />
+                                        <path class="grid-line-dashed" d="M186 20 L186 330" /><path class="grid-line-dashed" d="M203 20 L203 330" /><path class="grid-line-dashed" d="M216 20 L216 330" /><path class="grid-line-dashed" d="M226 20 L226 330" /><path class="grid-line-dashed" d="M234 20 L234 330" /><path class="grid-line-dashed" d="M241 20 L241 330" /><path class="grid-line-dashed" d="M247 20 L247 330" />
+                                        <path class="grid-line-dashed" d="M284 20 L284 330" /><path class="grid-line-dashed" d="M301 20 L301 330" /><path class="grid-line-dashed" d="M314 20 L314 330" /><path class="grid-line-dashed" d="M324 20 L324 330" /><path class="grid-line-dashed" d="M333 20 L333 330" /><path class="grid-line-dashed" d="M340 20 L340 330" /><path class="grid-line-dashed" d="M346 20 L346 330" />
+                                        <path class="grid-line-dashed" d="M382 20 L382 330" /><path class="grid-line-dashed" d="M399 20 L399 330" /><path class="grid-line-dashed" d="M412 20 L412 330" /><path class="grid-line-dashed" d="M422 20 L422 330" /><path class="grid-line-dashed" d="M430 20 L430 330" /><path class="grid-line-dashed" d="M437 20 L437 330" /><path class="grid-line-dashed" d="M443 20 L443 330" />
+                                        <rect x="95" y="20" width="24" height="310" fill="rgba(100,100,100,0.1)" />
+                                    </g>
 
-                                <!-- Axes -->
-                                <path d="M 60 330 L 480 330" stroke="#e0e0e0" stroke-width="1"/>
-                                <path d="M 60 330 L 60 20" stroke="#e0e0e0" stroke-width="1"/>
-                                <text x="270" y="328" class="axis-label" text-anchor="middle">Reynolds Number, Re</text>
-                                <text x="20" y="175" transform="rotate(-90, 20, 175)" class="axis-label" text-anchor="middle">Fanning Friction Factor, f</text>
-                                <text id="roughness-axis-title" x="498" y="15" class="axis-label" text-anchor="end">Relative Roughness, ε/D</text>
+                                    <!-- Axes -->
+                                    <path d="M 60 330 L 480 330" stroke="#e0e0e0" stroke-width="1"/>
+                                    <path d="M 60 330 L 60 20" stroke="#e0e0e0" stroke-width="1"/>
+                                    <text x="270" y="328" class="axis-label" text-anchor="middle">Reynolds Number, Re</text>
+                                    <text x="20" y="175" transform="rotate(-90, 20, 175)" class="axis-label" text-anchor="middle">Fanning Friction Factor, f</text>
+                                    <text id="roughness-axis-title" x="498" y="15" class="axis-label" text-anchor="end">Relative Roughness, ε/D</text>
 
-                                <!-- Y Ticks -->
-                                <g class="label" text-anchor="end">
-                                    <text x="55" y="307">0.002</text><text x="55" y="278">0.0025</text><text x="55" y="249">0.00375</text><text x="55" y="222">0.005</text><text x="55" y="193">0.0075</text><text x="55" y="164">0.01</text><text x="55" y="148">0.0125</text><text x="55" y="135">0.015</text><text x="55" y="107">0.02</text><text x="55" y="88">0.025</text>
-                                </g>
-                                <!-- X Ticks -->
-                                <g class="label" text-anchor="end">
-                                    <text x="60" y="340" transform="rotate(-45 60 340)">1,000</text><text x="157" y="340" transform="rotate(-45 157 340)">10,000</text><text x="255" y="340" transform="rotate(-45 255 340)">100,000</text><text x="353" y="340" transform="rotate(-45 353 340)">1,000,000</text><text x="451" y="340" font-size="7" transform="rotate(-45 451 340)">10,000,000</text><text x="480" y="340" font-size="7" transform="rotate(-45 480 340)">20,000,000</text>
-                                </g>
-                                <!-- Region Labels -->
-                                <text x="80" y="170" class="region-label" transform="rotate(-65 80 170)">Laminar Flow</text>
-                                <text x="105" y="35" class="region-label">Transition</text>
-                                <text x="350" y="210" class="region-label">Complete Turbulence</text>
+                                    <!-- Y Ticks -->
+                                    <g class="label" text-anchor="end">
+                                        <text x="55" y="307">0.002</text><text x="55" y="278">0.0025</text><text x="55" y="249">0.00375</text><text x="55" y="222">0.005</text><text x="55" y="193">0.0075</text><text x="55" y="164">0.01</text><text x="55" y="148">0.0125</text><text x="55" y="135">0.015</text><text x="55" y="107">0.02</text><text x="55" y="88">0.025</text>
+                                    </g>
+                                    <!-- X Ticks -->
+                                    <g class="label" text-anchor="end">
+                                        <text x="60" y="340" transform="rotate(-45 60 340)">1,000</text><text x="157" y="340" transform="rotate(-45 157 340)">10,000</text><text x="255" y="340" transform="rotate(-45 255 340)">100,000</text><text x="353" y="340" transform="rotate(-45 353 340)">1,000,000</text><text x="451" y="340" font-size="7" transform="rotate(-45 451 340)">10,000,000</text><text x="480" y="340" font-size="7" transform="rotate(-45 480 340)">20,000,000</text>
+                                    </g>
+                                    <!-- Region Labels -->
+                                    <text x="80" y="170" class="region-label" transform="rotate(-65 80 170)">Laminar Flow</text>
+                                    <text x="105" y="35" class="region-label">Transition</text>
+                                    <text x="350" y="210" class="region-label">Complete Turbulence</text>
 
-                                <!-- Flow Lines -->
-                                <g class="moody-curves">
-                                    <!-- Paths and labels are generated by index.tsx -->
-                                </g>
-                            </svg>
-                            <div id="indicator-container"></div>
+                                    <!-- Flow Lines -->
+                                    <g class="moody-curves">
+                                        <!-- Paths and labels are generated by index.tsx -->
+                                    </g>
+                                </svg>
+                                <div id="indicator-container"></div>
+                            </div>
+                        </div>
+                        <div id="data-dashboard">
+                            <h2>Flow Metrics</h2>
+                            <div class="metric">
+                                <span class="metric-label">State:</span>
+                                <span id="metric-state" class="metric-value"></span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">Reynolds No. (Re):</span>
+                                <span id="metric-re" class="metric-value"></span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">Pipe Diameter (D, in):</span>
+                                <span id="metric-diameter" class="metric-value"></span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">Abs. Roughness (ε, in):</span>
+                                <span id="metric-roughness" class="metric-value"></span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">Rel. Roughness (ε/D):</span>
+                                <span id="metric-rel-roughness" class="metric-value"></span>
+                            </div>
+                            <div id="friction-factor-metrics">
+                                 <!-- Friction factor values will be injected here by the script -->
+                            </div>
+                             <div class="friction-contribution-section">
+                                <span class="metric-label">Friction Contribution</span>
+                                <div class="contribution-bar">
+                                    <div id="viscosity-bar" class="contribution-segment viscosity">
+                                        <span id="viscosity-percent-label"></span>
+                                    </div>
+                                    <div id="roughness-bar" class="contribution-segment roughness">
+                                        <span id="roughness-percent-label"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="description">
+                            <h2 id="flow-title">Laminar Flow</h2>
+                            <p id="flow-text">In laminar flow, gas molecules move in smooth, parallel layers with minimal mixing. Velocity is highest at the center and decreases to zero at the pipe walls.</p>
                         </div>
                     </div>
-                    <div id="data-dashboard">
-                        <h2>Flow Metrics</h2>
-                        <div class="metric">
-                            <span class="metric-label">State:</span>
-                            <span id="metric-state" class="metric-value"></span>
+
+                    <div id="about-tab-content" role="tabpanel" aria-labelledby="about-tab-btn" class="hidden">
+                        <h2>About &amp; Theory</h2>
+                        <h3>How to Use This Simulator</h3>
+                        <p>This tool visualizes fluid dynamics principles inside a gas pipeline. Use the controls on the left to see how different parameters affect the flow.</p>
+                        <ul>
+                            <li><b>Presets:</b> Quickly jump between Laminar, Partially Turbulent, and Fully Turbulent flow regimes.</li>
+                            <li><b>Reynolds Number:</b> Use the slider or input box to adjust the Re. Notice how the flow pattern and friction factor change.</li>
+                            <li><b>Pipe Controls:</b> Select a standard nominal pipe size and adjust the absolute internal roughness (ε). The relative roughness (ε/D) is calculated automatically, but you can also set it directly.</li>
+                            <li><b>Friction Models:</b> Toggle different industry equations to compare their calculated friction factors on the Moody Diagram.</li>
+                        </ul>
+                        
+                        <h3>Core Concepts Illustrated</h3>
+                        <p>This simulator demonstrates key principles of fluid dynamics. The graphics below illustrate fundamental concepts that govern how gas flows through a pipeline.</p>
+                        
+                        <div class="theory-item">
+                            <div class="theory-text">
+                                <h4>Laminar vs. Turbulent Flow</h4>
+                                <p>
+                                    <strong>Laminar Flow</strong> (low Reynolds number) is characterized by smooth, parallel fluid layers (streamlines). It's orderly and predictable.
+                                    <strong>Turbulent Flow</strong> (high Reynolds number) is chaotic, with swirling eddies and significant mixing. Most industrial gas flows are turbulent.
+                                </p>
+                            </div>
+                            <div class="theory-graphic">
+                                <svg viewBox="0 0 350 100" class="theory-svg">
+                                  <g transform="translate(0, 15)">
+                                    <text x="75" y="-5" text-anchor="middle" class="svg-title">Laminar Flow</text>
+                                    <path d="M0 0 H150 M0 50 H150" class="svg-pipe-wall"></path>
+                                    <path d="M10 10 H140" class="svg-flow-line"></path>
+                                    <path d="M10 20 H140" class="svg-flow-line"></path>
+                                    <path d="M10 30 H140" class="svg-flow-line"></path>
+                                    <path d="M10 40 H140" class="svg-flow-line"></path>
+                                  </g>
+                                  <g transform="translate(190, 15)">
+                                    <text x="75" y="-5" text-anchor="middle" class="svg-title">Turbulent Flow</text>
+                                    <path d="M0 0 H150 M0 50 H150" class="svg-pipe-wall"></path>
+                                    <path d="M10 15 c 15 8, 30 -8, 45 4 s 30 12, 45 -2 s 25 -8, 35 4" class="svg-flow-line"></path>
+                                    <path d="M10 35 c 20 -10, 30 6, 45 -2 s 25 -10, 40 4 s 30 8, 45 -3" class="svg-flow-line"></path>
+                                    <path d="M60,25 C 70,15 80,35 90,25 S 110,15 120,25" stroke-dasharray="0" class="svg-eddy"></path>
+                                    <path d="M30,25 C 40,35 50,15 60,25 S 80,35 90,25" stroke-dasharray="0" class="svg-eddy"></path>
+                                  </g>
+                                </svg>
+                            </div>
                         </div>
-                        <div class="metric">
-                            <span class="metric-label">Reynolds No. (Re):</span>
-                            <span id="metric-re" class="metric-value"></span>
+
+                        <div class="theory-item">
+                            <div class="theory-text">
+                                <h4>Velocity Profiles</h4>
+                                <p>
+                                    The fluid's velocity is not uniform across the pipe's diameter. It is zero at the walls (the "no-slip condition") and maximum at the center.
+                                    The <strong>Laminar profile</strong> is parabolic. The <strong>Turbulent profile</strong> is much fuller or "flatter" due to mixing, with a steep velocity drop-off very close to the wall.
+                                </p>
+                            </div>
+                            <div class="theory-graphic">
+                                <svg viewBox="0 0 200 200" class="theory-svg">
+                                    <path d="M30 180 H180" class="svg-axis"></path>
+                                    <path d="M30 20 V180" class="svg-axis"></path>
+                                    <text x="105" y="195" text-anchor="middle" class="svg-label">Velocity</text>
+                                    <text x="15" y="100" transform="rotate(-90 15 100)" text-anchor="middle" class="svg-label">Pipe Position</text>
+                                    <text x="35" y="25" class="svg-label" text-anchor="start">Wall</text>
+                                    <text x="35" y="178" class="svg-label" text-anchor="start">Wall</text>
+                                    <text x="35" y="102" class="svg-label" text-anchor="start">Center</text>
+                                    <path d="M30,20 Q 170 100, 30 180" class="svg-profile-laminar"></path>
+                                    <text x="95" y="65" class="svg-label-laminar">Laminar</text>
+                                    <path d="M30,20 C 140 40, 140 160, 30 180" class="svg-profile-turbulent"></path>
+                                    <text x="95" y="135" class="svg-label-turbulent">Turbulent</text>
+                                </svg>
+                            </div>
                         </div>
-                        <div class="metric">
-                            <span class="metric-label">Pipe Diameter (D, in):</span>
-                            <span id="metric-diameter" class="metric-value"></span>
+
+                        <div class="theory-item">
+                            <div class="theory-text">
+                                <h4>The Boundary Layer (δ)</h4>
+                                <p>
+                                    The <strong>Boundary Layer</strong> is the thin region of fluid close to the pipe wall where viscous forces dominate. Due to the "no-slip condition," the fluid velocity is zero right at the wall surface. The boundary layer is where the velocity transitions from zero to the free-stream velocity further in the pipe.
+                                </p>
+                                <p>
+                                    In turbulent flow, this layer has two parts: a very thin, stable <strong>viscous sublayer</strong> right against the wall, and a turbulent outer layer. Pipe roughness only increases friction when its peaks are taller than this viscous sublayer.
+                                </p>
+                            </div>
+                            <div class="theory-graphic">
+                                <svg viewBox="0 0 300 160" class="theory-svg">
+                                    <text x="150" y="15" text-anchor="middle" class="svg-title">Fluid Boundary Layer</text>
+                        
+                                    <!-- Pipe Wall -->
+                                    <path d="M0 140 H300" class="svg-pipe-wall-thick"></path>
+                                    <text x="150" y="155" text-anchor="middle" class="svg-label">Pipe Wall</text>
+                        
+                                    <!-- Boundary Layer Visualization -->
+                                    <path d="M10,140 C 80 140, 60 40, 120 40" class="svg-boundary-layer-edge"></path>
+                                    <text x="125" y="45" class="svg-label">δ (Edge)</text>
+                        
+                                    <!-- Velocity Vectors -->
+                                    <path d="M20 140 V110" class="svg-velocity-vector"></path><path d="M20 110 L17 115 M20 110 L23 115" class="svg-arrow-head"></path>
+                                    <path d="M50 140 V80" class="svg-velocity-vector"></path><path d="M50 80 L47 85 M50 80 L53 85" class="svg-arrow-head"></path>
+                                    <path d="M80 140 V55" class="svg-velocity-vector"></path><path d="M80 55 L77 60 M80 55 L83 60" class="svg-arrow-head"></path>
+                        
+                                    <!-- Viscous Sublayer (Turbulent concept) -->
+                                    <rect x="150" y="130" width="140" height="10" class="svg-viscous-sublayer"></rect>
+                                    <text x="220" y="125" text-anchor="middle" class="svg-label">Viscous Sublayer</text>
+                                    <path d="M180,120 C 185,110 190,115 195,105" class="svg-eddy small-eddy"></path>
+                                    <path d="M240,100 C 245,90 250,95 255,85" class="svg-eddy small-eddy"></path>
+                                    <text x="220" y="70" text-anchor="middle" class="svg-title">Turbulent Outer Layer</text>
+                                </svg>
+                            </div>
                         </div>
-                        <div class="metric">
-                            <span class="metric-label">Abs. Roughness (ε, in):</span>
-                            <span id="metric-roughness" class="metric-value"></span>
+                        
+                        <div class="theory-item">
+                            <div class="theory-text">
+                                <h4>Pipe Roughness (ε)</h4>
+                                <p>
+                                    No pipe is perfectly smooth. Microscopic imperfections, or <strong>absolute roughness (ε)</strong>, disrupt the flow near the wall.
+                                    The effect is relative to the pipe's size, defined by <strong>Relative Roughness (ε/D)</strong>. In turbulent flow, higher relative roughness increases friction.
+                                </p>
+                            </div>
+                            <div class="theory-graphic">
+                                <svg viewBox="0 0 250 180" class="theory-svg">
+                                    <g transform="translate(10, 20)">
+                                        <text x="115" y="-5" text-anchor="middle" class="svg-title">Smooth Pipe Wall</text>
+                                        <rect x="0" y="0" width="230" height="50" class="svg-pipe-material"></rect>
+                                        <path d="M0 50 H230" class="svg-pipe-wall-thick"></path>
+                                        <text x="115" y="30" text-anchor="middle" class="svg-label">Fluid Flow</text>
+                                    </g>
+                                    <g transform="translate(10, 110)">
+                                        <text x="115" y="-5" text-anchor="middle" class="svg-title">Rough Pipe Wall</text>
+                                        <rect x="0" y="0" width="230" height="50" class="svg-pipe-material"></rect>
+                                        <path d="M0 50 q 5 -8, 10 0 t 10 0 q 5 6, 10 0 t 10 0 q 5 -10, 10 0 t 10 0 q 5 4, 10 0 t 10 0 q 5 -7, 10 0 t 10 0 q 5 9, 10 0 t 10 0 q 5 -5, 10 0 t 10 0 q 5 8, 10 0 t 10 0 q 5 -6, 10 0 t 10 0" class="svg-pipe-wall-thick"></path>
+                                        <text x="115" y="30" text-anchor="middle" class="svg-label">Fluid Flow</text>
+                                        <path d="M75 50 V65" class="svg-arrow"></path>
+                                        <path d="M80 44 V65" class="svg-arrow"></path>
+                                        <path d="M70 65 H85" class="svg-arrow"></path>
+                                        <text x="90" y="60" class="svg-label">ε (Roughness)</text>
+                                    </g>
+                                </svg>
+                            </div>
                         </div>
-                        <div class="metric">
-                            <span class="metric-label">Rel. Roughness (ε/D):</span>
-                            <span id="metric-rel-roughness" class="metric-value"></span>
-                        </div>
-                        <div id="friction-factor-metrics">
-                             <!-- Friction factor values will be injected here by the script -->
-                        </div>
-                    </div>
-                    <div id="description">
-                        <h2 id="flow-title">Laminar Flow</h2>
-                        <p id="flow-text">In laminar flow, gas molecules move in smooth, parallel layers with minimal mixing. Velocity is highest at the center and decreases to zero at the pipe walls.</p>
+
+                        <h3>Important Caveats: IGT &amp; AGA Models</h3>
+                        <p>While the Colebrook-White equation provides a robust model across the entire turbulent flow regime, the other models have specific applications and limitations:</p>
+                        <ul>
+                            <li>
+                                <strong>Colebrook-White:</strong> The industry standard. It accurately models the full range of turbulent flow, from the "smooth pipe" curve up into the "fully rough" zone. It correctly accounts for both Reynolds number and pipe roughness.
+                            </li>
+                            <li>
+                                <strong>IGT (Institute of Gas Technology):</strong> This model represents turbulent flow in a <strong>perfectly smooth pipe (ε = 0)</strong>. It is only dependent on the Reynolds number. As you can see on the diagram, it follows the lowest curve and is inaccurate for any pipe with measurable roughness.
+                            </li>
+                            <li>
+                                <strong>AGA Fully Turbulent:</strong> This equation models flow only in the "complete turbulence" or "fully rough" zone. In this region (far right of the diagram), friction is dominated by pipe roughness and becomes independent of the Reynolds number, which is why the Moody curves flatten out. Using the AGA equation in the partially turbulent zone (sloped lines) will yield inaccurate results.
+                            </li>
+                        </ul>
                     </div>
                 </div>
             </div>
