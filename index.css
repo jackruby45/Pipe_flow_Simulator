@@ -54,6 +54,7 @@ body.is-resizing-v {
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     border: 1px solid rgba(255, 255, 255, 0.1);
     overflow: hidden;
+    position: relative; /* Positioning context for floating elements */
 }
 
 header {
@@ -493,9 +494,25 @@ canvas {
     font-size: 1.2rem;
 }
 
-#flow-text {
-    line-height: 1.6;
+/* --- Moody Diagram Draggable Styles --- */
+#moody-diagram-container.is-floating {
+    position: absolute;
+    z-index: 1000;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    transition: none; /* Disable transition while floating */
 }
+
+#moody-diagram-container.is-floating #moody-title {
+    cursor: move;
+    background-color: rgba(255,255,255,0.1);
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+    margin: -1.5rem -1.5rem 0.75rem -1.5rem; /* Adjust to header */
+    border-radius: 8px 8px 0 0;
+}
+/* --- End Draggable Styles --- */
+
 
 .diagram-wrapper {
     position: relative;

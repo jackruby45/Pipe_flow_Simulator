@@ -20,6 +20,7 @@ interface FrictionResult {
 }
 
 // --- DOM Element Selection ---
+const appContainer = document.getElementById('app') as HTMLDivElement;
 const canvas = document.getElementById('pipelineCanvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 const velocityCanvas = document.getElementById('velocityProfileCanvas') as HTMLCanvasElement;
@@ -67,6 +68,9 @@ const verticalResizer = document.getElementById('vertical-resizer') as HTMLDivEl
 const pipeContainer = document.querySelector('.pipe-container') as HTMLDivElement;
 const velocityContainer = document.querySelector('.velocity-container') as HTMLDivElement;
 
+const moodyDiagramContainer = document.getElementById('moody-diagram-container') as HTMLDivElement;
+const moodyTitle = document.getElementById('moody-title') as HTMLHeadingElement;
+
 // Tab elements
 const diagramTabBtn = document.getElementById('diagram-tab-btn') as HTMLButtonElement;
 const aboutTabBtn = document.getElementById('about-tab-btn') as HTMLButtonElement;
@@ -78,6 +82,7 @@ const aboutTabContent = document.getElementById('about-tab-content') as HTMLDivE
 const PARTICLE_COUNT = 300;
 const WALL_BUFFER = 5;
 const LERP_FACTOR = 0.05; // Smoothing factor for transitions
+const RE_MAX = 30000000;
 
 const ROUGHNESS_LEVELS = [
     { id: 'curve-0_05', value: 0.05, label: '0.05000' }, { id: 'curve-0_04', value: 0.04, label: '0.04000' },
@@ -100,6 +105,7 @@ let currentProfile: number[] = [];
 let showExplanation = false;
 let explanationAnimationStartTimestamp: number | null = null;
 let roughnessProfile: number[] = [];
+let minRoughnessValue = 1.0;
 
 // --- Dynamic State ---
 let currentViewMode: ViewMode = 'full';
@@ -248,7 +254,7 @@ function getColorForVelocity(velocity: number, maxVelocity: number): string {
 
 // --- Moody Diagram Generation ---
 function mapReToX(re: number): number {
-    const reMin = 1000, reMax = 20000000;
+    const reMin = 1000, reMax = RE_MAX;
     const xMin = 60, xMax = 480;
     return mapLog(re, reMin, reMax, xMin, xMax);
 }
@@ -267,7 +273,7 @@ function renderMoodyDiagramPaths() {
 
     const pointCount = 400;
     const plotReValues = Array.from({ length: pointCount }, (_, i) =>
-        Math.pow(10, Math.log10(2300) + i * (Math.log10(2e7) - Math.log10(2300)) / (pointCount - 1))
+        Math.pow(10, Math.log10(2300) + i * (Math.log10(RE_MAX) - Math.log10(2300)) / (pointCount - 1))
     );
 
     ROUGHNESS_LEVELS.forEach(level => {
@@ -319,8 +325,8 @@ function renderMoodyDiagramPaths() {
     const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     text.setAttribute('class', 'region-label');
     const smoothCurve = ROUGHNESS_LEVELS.find(l => l.value === 0)!;
-    const smoothF = getFlowProperties(1.5e7, 0).friction;
-    text.setAttribute('x', mapReToX(1.5e7).toFixed(2));
+    const smoothF = getFlowProperties(RE_MAX * 0.5, 0).friction;
+    text.setAttribute('x', mapReToX(RE_MAX * 0.5).toFixed(2));
     text.setAttribute('y', (mapFToY(smoothF) + 10).toFixed(2));
     text.setAttribute('text-anchor', 'end');
     text.textContent = 'Smooth Pipe';
@@ -376,8 +382,14 @@ function initParticles() {
     }
      // Create a random profile for the bumpy wall in the detail view
     roughnessProfile = [];
-    for (let i = 0; i < canvas.clientWidth; i++) {
-        roughnessProfile.push(Math.random());
+    minRoughnessValue = 1.0;
+    const width = Math.max(1, canvas.clientWidth); // Ensure width is at least 1
+    for (let i = 0; i < width; i++) {
+        const r = Math.random();
+        roughnessProfile.push(r);
+        if (r < minRoughnessValue) {
+            minRoughnessValue = r;
+        }
     }
 }
 
@@ -402,25 +414,39 @@ function updateParticleInFullView(p: Particle, re: number, f: number) {
     p.x += p.vx;
     p.y += p.vy;
 
+    // --- Collision Logic ---
+    const boundaryLayerThickness = (re > 2300) ? mapLog(re, 2301, RE_MAX, 30, 5) : 0;
+    // For laminar, collide with the wall. For turbulent, collide with the boundary layer.
+    const topCollisionY = WALL_BUFFER + (re > 2300 ? boundaryLayerThickness : 0);
+    const bottomCollisionY = canvas.clientHeight - WALL_BUFFER - (re > 2300 ? boundaryLayerThickness : 0);
+    
+    if (p.y - p.radius < topCollisionY) {
+        p.y = topCollisionY + p.radius;
+        p.vy *= -0.5;
+    }
+    if (p.y + p.radius > bottomCollisionY) {
+        p.y = bottomCollisionY - p.radius;
+        p.vy *= -0.5;
+    }
+    
     if (p.x > canvas.clientWidth + p.radius) {
         p.x = -p.radius;
         p.y = Math.random() * canvas.clientHeight;
-    }
-     if (p.y < WALL_BUFFER || p.y > canvas.clientHeight - WALL_BUFFER) {
-        p.y = Math.max(WALL_BUFFER, Math.min(canvas.clientHeight - WALL_BUFFER, p.y));
-        p.vy *= -0.5;
     }
     p.color = getColorForVelocity(p.vx, 12);
 }
 
 function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: number, sublayerThickness: number) {
     const wallBaseY = canvas.clientHeight * 0.8;
-    const roughnessXIndex = Math.floor(p.x);
-    const wallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
+    const roughnessXIndex = Math.max(0, Math.min(Math.floor(p.x), roughnessProfile.length - 1));
+    const physicalWallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
     const sublayerTopY = wallBaseY - sublayerThickness;
+    
+    // The particle collides with the highest surface: either the sublayer or a roughness peak.
+    const collisionSurfaceY = Math.min(physicalWallY, sublayerTopY);
 
     // Base velocity in the free stream
-    let baseVx = mapLog(re, 2301, 20000000, 4, 15);
+    let baseVx = mapLog(re, 2301, RE_MAX, 4, 15);
     let turbulenceFactor = Math.max(0, Math.log10(re / 2000)) * 2;
 
     p.vy += (Math.random() - 0.5) * turbulenceFactor * 0.2; // Gravity/settling effect
@@ -435,14 +461,17 @@ function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: nu
     p.x += p.vx;
     p.y += p.vy;
 
-    // Collision with rough wall
-    if (p.y > wallY) {
-        p.y = wallY;
+    // Collision with the effective wall (sublayer or roughness peak)
+    if (p.y + p.radius > collisionSurfaceY) {
+        p.y = collisionSurfaceY - p.radius;
         p.vx *= 0.8;
         p.vy *= -0.4; // Bounce off
-        // Create an eddy
-        p.vy += (Math.random() - 0.8) * 4;
-        p.vx += (Math.random() - 0.5) * 4;
+        
+        // Create an eddy only if it hits the rough physical wall
+        if (collisionSurfaceY === physicalWallY) {
+             p.vy += (Math.random() - 0.8) * 4;
+             p.vx += (Math.random() - 0.5) * 4;
+        }
     }
     
     // Reset particle
@@ -458,64 +487,48 @@ function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: nu
 
 function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight: number, sublayerThickness: number) {
     const wallBaseY = canvas.clientHeight * 0.75;
-    const roughnessXIndex = Math.floor(p.x + canvas.clientWidth) % canvas.clientWidth;
-    const wallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
     const sublayerTopY = wallBaseY - sublayerThickness;
 
-    const isSmooth = sublayerThickness > roughnessHeight;
+    // Ensure index is within bounds, handling wrapping
+    const roughnessXIndex = Math.floor(p.x + canvas.clientWidth) % canvas.clientWidth;
+    const physicalWallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
+    const collisionSurfaceY = Math.min(physicalWallY, sublayerTopY);
 
-    if (isSmooth) {
-        // Particles move slowly just above the sublayer
-        p.vx = 0.5 + Math.random() * 0.5;
-        p.vy += (Math.random() - 0.5) * 0.2; // very little vertical motion
-        if (p.y < sublayerTopY - p.radius * 2) { // If it gets too high, pull it back down
-            p.vy += 0.1;
-        } else if (p.y > sublayerTopY - p.radius) { // If it gets too low, push it up
-            p.vy -= 0.1;
-        }
-
-    } else { // Rough
-        if (p.y > sublayerTopY) { // Trapped in the roughness
-            // Swirling eddy motion
-            p.vx += (Math.random() - 0.5) * 1.5 - (p.vx * 0.1);
-            p.vy += (Math.random() - 0.5) * 1.5 - (p.vy * 0.1);
-        } else { // In the faster flow above
-            p.vx = 1 + Math.random();
-            p.vy += (Math.random() - 0.5) * 0.5;
-        }
-
-        // Collision with rough wall
-        if (p.y + p.radius > wallY) {
-            p.y = wallY - p.radius;
-            p.vx *= -0.3; // bounce back
-            p.vy *= -0.5; // bounce up
-        }
+    // 1. Update velocities based on current position
+    if (p.y > sublayerTopY) { // Inside sublayer or between peaks
+        p.vx += (Math.random() - 0.5) * 1.5 - (p.vx * 0.1);
+        p.vy += (Math.random() - 0.5) * 1.5 - (p.vy * 0.1);
+    } else { // Free stream
+        p.vx = 1 + Math.random();
+        p.vy += (Math.random() - 0.5) * 0.5;
     }
-
+    
+    // 2. Update position
     p.x += p.vx;
     p.y += p.vy;
 
-    // Reset particle
+    // 3. Handle collisions with the effective wall
+    if (p.y + p.radius > collisionSurfaceY) {
+        p.y = collisionSurfaceY - p.radius;
+        p.vx *= -0.3;
+        p.vy *= -0.5;
+    }
+
+    // 4. Handle particle reset if it goes offscreen
     if (p.x > canvas.clientWidth + p.radius) {
         p.x = -p.radius;
-        p.y = Math.random() * (wallBaseY - sublayerThickness * 1.2); // reset into the flow
-    }
-     if (p.x < -p.radius) {
+        p.y = Math.random() * (sublayerTopY - 20); // Respawn above sublayer
+    } else if (p.x < -p.radius) {
         p.x = canvas.clientWidth + p.radius;
-        p.y = Math.random() * (wallBaseY - sublayerThickness * 1.2);
+        p.y = Math.random() * (sublayerTopY - 20); // Respawn above sublayer
     }
-    if (p.y < -p.radius) { // flew off top
+    if (p.y < -p.radius) {
         p.y = 0;
         p.x = Math.random() * canvas.clientWidth;
     }
-    // Clamp to bottom
-    if(p.y > canvas.clientHeight) {
-        p.y = canvas.clientHeight;
-    }
-
+    
     p.color = getColorForVelocity(Math.hypot(p.vx, p.vy), 4);
 }
-
 
 
 // --- Velocity Profile Logic ---
@@ -614,7 +627,7 @@ function drawBoundaryLayer(ctx: CanvasRenderingContext2D, re: number, time: numb
     const pipeBottomY = height - WALL_BUFFER;
 
     // The boundary layer gets thinner as Re increases.
-    const thickness = mapLog(re, 2301, 20000000, 30, 5);
+    const thickness = mapLog(re, 2301, RE_MAX, 30, 5);
 
     // --- Use a contrasting, theme-aligned color ---
     const baseColor = '233, 69, 96'; // App's secondary color (red-pink)
@@ -682,8 +695,8 @@ const drawTextWithBackground = (
     ctx.textBaseline = 'middle';
 
     const textMetrics = ctx.measureText(text);
-    const hPadding = 12; // Generous horizontal padding
-    const vPadding = 10; // Generous vertical padding
+    const hPadding = 15; // Increased horizontal padding
+    const vPadding = 12; // Increased vertical padding
     const textHeight = (textMetrics.actualBoundingBoxAscent || 14) + (textMetrics.actualBoundingBoxDescent || 2);
     const rectHeight = textHeight + vPadding * 2;
     const rectWidth = textMetrics.width + hPadding * 2;
@@ -774,10 +787,25 @@ const drawInfoBox = (
         }
     }
 
-    const boxWidth = 280;
     const lineHeight = 18;
-    const padding = 12;
+    const padding = 15; // Generous padding
     const titleHeight = 22;
+
+    // --- DYNAMIC WIDTH CALCULATION ---
+    let maxWidth = 0;
+    // Measure title width
+    ctx.font = 'bold 13px "Roboto", sans-serif';
+    maxWidth = Math.max(maxWidth, ctx.measureText(title).width);
+    // Measure content lines width
+    lines.forEach(line => {
+        const isBold = line.startsWith('<b>');
+        ctx.font = isBold ? 'bold 12px "Roboto", sans-serif' : '12px "Roboto", sans-serif';
+        const textToMeasure = line.replace(/<b>|<\/b>/g, '');
+        maxWidth = Math.max(maxWidth, ctx.measureText(textToMeasure).width);
+    });
+    const boxWidth = maxWidth + padding * 2;
+    // --- END DYNAMIC WIDTH CALCULATION ---
+
     const boxHeight = padding * 2 + titleHeight + (lines.length * lineHeight);
     const boxX = 15 + easeOffset;
     const boxY = ctx.canvas.clientHeight - boxHeight - 15;
@@ -874,7 +902,7 @@ function drawExplanationOverlay(
         ctx.lineTo(arrowStart + 140 * progress, height - 25);
         ctx.stroke();
 
-        const boundaryLayerThickness = mapLog(re, 2301, 20000000, 30, 5);
+        const boundaryLayerThickness = mapLog(re, 2301, RE_MAX, 30, 5);
         const boundaryLayerYTop = WALL_BUFFER + boundaryLayerThickness;
 
         if (physicsFlowState === 'fully-turbulent') {
@@ -916,7 +944,7 @@ function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     const roughnessHeight = absRoughness * zoomFactor;
 
     // The viscous sublayer gets thinner as Re increases.
-    const sublayerThickness = mapLog(re, 2301, 20000000, 80, 5);
+    const sublayerThickness = mapLog(re, 2301, RE_MAX, 80, 5);
     const sublayerTopY = wallBaseY - sublayerThickness;
     
     // --- Draw Wall & Sublayer ---
@@ -948,24 +976,22 @@ function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
 
     if (isSmooth) {
         drawInfoBox(ctx, 'Hydraulically Smooth Flow', [
-            'The viscous sublayer is thicker than',
-            'the roughness elements, effectively',
-            '"hiding" them from the main flow.',
+            'The viscous sublayer is thicker than the',
+            'roughness elements, effectively "hiding"',
+            'them from the main flow.',
             '<b>Friction Driver:</b> Fluid Viscosity (Re)',
-            'Particles flow smoothly over the',
-            'buffered surface.'
+            'Particles flow smoothly over the buffered surface.'
         ], 1.0, 'boundary-infobox');
 
         const textRect = drawTextWithBackground(ctx, 'Roughness elements buried in sublayer', width / 2, wallBaseY - roughnessHeight - 20, 'center', 'boundary-text-1');
         drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
     } else {
         drawInfoBox(ctx, 'Rough Flow', [
-            'Roughness elements are taller than',
-            'the viscous sublayer, piercing into',
-            'the faster-moving turbulent flow.',
+            'Roughness elements pierce the viscous sublayer,',
+            'entering the faster-moving turbulent flow.',
             '<b>Friction Driver:</b> Pipe Roughness (ε)',
-            'Collisions create eddies, causing',
-            'significant energy loss.'
+            'Collisions create eddies, causing significant',
+            'energy loss.'
         ], 1.0, 'boundary-infobox');
         const textRect = drawTextWithBackground(ctx, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - roughnessHeight - 40, 'center', 'boundary-text-1');
         drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - roughnessHeight + 5);
@@ -992,7 +1018,7 @@ function drawPipeWallDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     const roughnessHeight = absRoughness * zoomFactor;
     const wallBaseY = height * 0.75; // Wall takes up most of the view
 
-    const sublayerThickness = mapLog(re, 2301, 20000000, 150, 10); // Thicker on screen for visibility
+    const sublayerThickness = mapLog(re, 2301, RE_MAX, 150, 10); // Thicker on screen for visibility
     const sublayerTopY = wallBaseY - sublayerThickness;
 
     // --- Draw Wall & Sublayer ---
@@ -1028,27 +1054,27 @@ function drawPipeWallDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
 
     if (isSmooth) {
         drawInfoBox(ctx, 'Wall View: Hydraulically Smooth', [
-            '<b>Condition:</b> Viscous Sublayer > Roughness Height (ε)',
-            'The sublayer engulfs the wall texture,',
-            'creating a "smooth" buffer. The main flow',
-            'does not interact with the wall, and',
-            'friction is driven by fluid viscosity.',
+            '<b>Condition:</b> Viscous Sublayer > Roughness (ε)',
+            'The sublayer engulfs the wall texture, creating',
+            'a "smooth" buffer. The main flow does not',
+            'interact with the wall. Friction is driven by',
+            'fluid viscosity.',
             '∙ Particles glide smoothly over the buffered zone.'
         ], 1.0, 'wall-infobox');
         
         const peakRect = drawTextWithBackground(ctx, 'Roughness Peak (ε)', roughnessPeakX, roughnessPeakY - 20, 'center', 'wall-peak-label');
         drawArrow(ctx, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, roughnessPeakX, roughnessPeakY);
         
-        const sublayerRect = drawTextWithBackground(ctx, 'Viscous Sublayer completely covers peaks', 180, sublayerTopY - 20, 'center', 'wall-sublayer-label');
+        const sublayerRect = drawTextWithBackground(ctx, 'Sublayer completely covers peaks', 180, sublayerTopY - 20, 'center', 'wall-sublayer-label');
         drawArrow(ctx, sublayerRect.x + sublayerRect.width / 2, sublayerRect.y + sublayerRect.height, 180, sublayerTopY);
     } else {
         drawInfoBox(ctx, 'Wall View: Rough Flow', [
-            '<b>Condition:</b> Roughness Height (ε) > Viscous Sublayer',
-            'Peaks protrude into the flow, creating',
-            'form drag and chaotic eddies. This',
-            'significantly increases energy loss.',
+            '<b>Condition:</b> Roughness (ε) > Viscous Sublayer',
+            'Peaks protrude into the flow, creating form drag',
+            'and chaotic eddies. This significantly increases',
+            'energy loss.',
             '∙ Friction is dominated by physical obstructions.',
-            '∙ Particles are trapped in valleys, dissipating energy.'
+            '∙ Particles can be trapped, dissipating energy.'
         ], 1.0, 'wall-infobox');
         
         const peakRect = drawTextWithBackground(ctx, 'Exposed Peak creates drag', roughnessPeakX, roughnessPeakY - 20, 'center', 'wall-peak-label');
@@ -1175,7 +1201,7 @@ function animateDetailView(time: number) {
 
     const zoomFactor = 2000;
     const roughnessHeight = absoluteRoughnessIN * zoomFactor;
-    const sublayerThickness = mapLog(currentRe, 2301, 20000000, 80, 5);
+    const sublayerThickness = mapLog(currentRe, 2301, RE_MAX, 80, 5);
     
     drawBoundaryDetailView(ctx, currentRe, absoluteRoughnessIN);
 
@@ -1196,7 +1222,7 @@ function animatePipeWallDetailView(time: number) {
 
     const zoomFactor = 10000;
     const roughnessHeight = absoluteRoughnessIN * zoomFactor;
-    const sublayerThickness = mapLog(currentRe, 2301, 20000000, 150, 10);
+    const sublayerThickness = mapLog(currentRe, 2301, RE_MAX, 150, 10);
     
     drawPipeWallDetailView(ctx, currentRe, absoluteRoughnessIN);
 
@@ -1262,12 +1288,35 @@ function animate() {
 }
 
 // --- UI & Event Handling ---
-function handleCanvasResize() {
+function handleAppResize() {
     cancelAnimationFrame(animationFrameId);
     setupCanvas(canvas);
     setupCanvas(velocityCanvas);
     initParticles();
     currentProfile = calculateProfile(currentRe, currentF, velocityCanvas.clientHeight);
+    
+    // Ensure floating moody diagram stays within bounds
+    if (moodyDiagramContainer.classList.contains('is-floating')) {
+        const appRect = appContainer.getBoundingClientRect();
+        const moodyRect = moodyDiagramContainer.getBoundingClientRect();
+
+        let currentLeft = parseFloat(moodyDiagramContainer.style.left || '0');
+        let currentTop = parseFloat(moodyDiagramContainer.style.top || '0');
+        
+        if (currentLeft + moodyRect.width > appRect.width) {
+            moodyDiagramContainer.style.left = `${appRect.width - moodyRect.width}px`;
+        }
+        if (currentTop + moodyRect.height > appRect.height) {
+            moodyDiagramContainer.style.top = `${appRect.height - moodyRect.height}px`;
+        }
+        if (currentLeft < 0) {
+            moodyDiagramContainer.style.left = `0px`;
+        }
+        if (currentTop < 0) {
+             moodyDiagramContainer.style.top = `0px`;
+        }
+    }
+    
     animate();
 }
 
@@ -1363,7 +1412,7 @@ function initHorizontalResizer() {
             const sidebarFr = sidebarColumn.offsetWidth / totalWidth;
             mainContainer.style.gridTemplateColumns = `${vizFr}fr ${resizer.offsetWidth}px ${sidebarFr}fr`;
         }
-        handleCanvasResize();
+        handleAppResize();
     }
 }
 
@@ -1420,7 +1469,7 @@ function initVerticalResizer() {
         }
 
         // Use requestAnimationFrame to ensure the resize logic runs after the layout has settled.
-        requestAnimationFrame(handleCanvasResize);
+        requestAnimationFrame(handleAppResize);
     }
 }
 
@@ -1534,6 +1583,75 @@ function initDragHandler() {
     canvas.addEventListener('mousemove', onCanvasMouseMove);
 }
 
+function initMoodyDiagramDrag() {
+    let isDragging = false;
+    let isFloating = false;
+    let initialX = 0, initialY = 0;
+    let offsetX = 0, offsetY = 0;
+
+    const onMouseDown = (e: MouseEvent) => {
+        e.preventDefault();
+        isDragging = true;
+        
+        const appRect = appContainer.getBoundingClientRect();
+
+        if (!isFloating) {
+            isFloating = true;
+            const moodyRect = moodyDiagramContainer.getBoundingClientRect();
+            
+            // Set fixed size and position before making it absolute
+            moodyDiagramContainer.style.width = `${moodyRect.width}px`;
+            moodyDiagramContainer.style.height = `${moodyRect.height}px`;
+            
+            const initialLeft = moodyRect.left - appRect.left;
+            const initialTop = moodyRect.top - appRect.top;
+            
+            moodyDiagramContainer.style.left = `${initialLeft}px`;
+            moodyDiagramContainer.style.top = `${initialTop}px`;
+            
+            moodyDiagramContainer.classList.add('is-floating');
+        }
+        
+        initialX = e.clientX;
+        initialY = e.clientY;
+        
+        offsetX = e.clientX - moodyDiagramContainer.offsetLeft;
+        offsetY = e.clientY - moodyDiagramContainer.offsetTop;
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+        if (!isDragging) return;
+
+        const appRect = appContainer.getBoundingClientRect();
+        const moodyRect = moodyDiagramContainer.getBoundingClientRect();
+
+        let newLeft = e.clientX - offsetX;
+        let newTop = e.clientY - offsetY;
+        
+        // Constrain within the app container
+        const maxLeft = appRect.width - moodyRect.width;
+        const maxTop = appRect.height - moodyRect.height;
+        
+        newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+        newTop = Math.max(0, Math.min(newTop, maxTop));
+        
+        moodyDiagramContainer.style.left = `${newLeft}px`;
+        moodyDiagramContainer.style.top = `${newTop}px`;
+    };
+
+    const onMouseUp = () => {
+        isDragging = false;
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    moodyTitle.addEventListener('mousedown', onMouseDown);
+}
+
+
 reynoldsSlider.addEventListener('input', (e) => {
     const logVal = parseFloat((e.target as HTMLInputElement).value);
     targetRe = Math.pow(10, logVal);
@@ -1549,7 +1667,7 @@ reynoldsInput.addEventListener('change', (e) => {
         reynoldsInput.value = Math.round(targetRe).toString();
         return;
     }
-    val = Math.max(1000, Math.min(20000000, val));
+    val = Math.max(1000, Math.min(RE_MAX, val));
     
     targetRe = val;
     reynoldsInput.value = targetRe.toString();
@@ -1706,12 +1824,13 @@ function main() {
     initVerticalResizer();
     initInfoTabs();
     initDragHandler();
+    initMoodyDiagramDrag();
     updateRelativeRoughnessInput();
     setPreset('laminar');
 
     animate();
 
-    window.addEventListener('resize', handleCanvasResize);
+    window.addEventListener('resize', handleAppResize);
 }
 
 main();
