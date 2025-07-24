@@ -1,4 +1,5 @@
 
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -439,11 +440,11 @@ function updateParticleInFullView(p: Particle, re: number, f: number) {
     p.color = getColorForVelocity(p.vx, 12);
 }
 
-function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: number, sublayerThickness: number) {
+function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: number, viscousSublayerThickness: number) {
     const wallBaseY = canvas.clientHeight * 0.8;
     const roughnessXIndex = Math.max(0, Math.min(Math.floor(p.x), roughnessProfile.length - 1));
     const physicalWallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
-    const sublayerTopY = wallBaseY - sublayerThickness;
+    const sublayerTopY = wallBaseY - viscousSublayerThickness;
     
     // The particle collides with the highest surface: either the sublayer or a roughness peak.
     const collisionSurfaceY = Math.min(physicalWallY, sublayerTopY);
@@ -455,7 +456,7 @@ function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: nu
     p.vy += (Math.random() - 0.5) * turbulenceFactor * 0.2; // Gravity/settling effect
     p.vx = baseVx + (Math.random() - 0.5) * turbulenceFactor;
 
-    if (p.y > sublayerTopY) { // Inside boundary/sublayer
+    if (p.y > sublayerTopY) { // Inside viscous sublayer
         const depthRatio = (p.y - sublayerTopY) / (wallBaseY - sublayerTopY);
         p.vx *= (1 - depthRatio * 0.9); // Slow down significantly near wall
         p.vy *= 0.5; // Dampen vertical motion
@@ -488,9 +489,9 @@ function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: nu
     p.color = getColorForVelocity(p.vx, 16);
 }
 
-function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight: number, sublayerThickness: number) {
+function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight: number, viscousSublayerThickness: number) {
     const wallBaseY = canvas.clientHeight * 0.75;
-    const sublayerTopY = wallBaseY - sublayerThickness;
+    const sublayerTopY = wallBaseY - viscousSublayerThickness;
 
     // Ensure index is within bounds, handling wrapping
     const roughnessXIndex = Math.floor(p.x + canvas.clientWidth) % canvas.clientWidth;
@@ -629,46 +630,58 @@ function drawBoundaryLayer(ctx: CanvasRenderingContext2D, re: number, time: numb
     const pipeTopY = WALL_BUFFER;
     const pipeBottomY = height - WALL_BUFFER;
 
-    // The boundary layer gets thinner as Re increases.
-    const thickness = mapLog(re, 2301, RE_MAX, 30, 5);
+    // The main turbulent boundary layer gets thinner as Re increases.
+    const boundaryThickness = mapLog(re, 2301, RE_MAX, 30, 5);
+    // The viscous sublayer is much thinner.
+    const viscousSublayerThickness = mapLog(re, 2301, RE_MAX, 8, 1);
 
-    // --- Use a contrasting, theme-aligned color ---
+    // --- Main Turbulent Boundary Layer (Reddish) ---
     const baseColor = '233, 69, 96'; // App's secondary color (red-pink)
-
-    // Top Layer Gradient
-    const topGradient = ctx.createLinearGradient(0, pipeTopY, 0, pipeTopY + thickness);
-    topGradient.addColorStop(0, `rgba(${baseColor}, 0.35)`); // More opaque at the wall
+    const topGradient = ctx.createLinearGradient(0, pipeTopY, 0, pipeTopY + boundaryThickness);
+    topGradient.addColorStop(0, `rgba(${baseColor}, 0.5)`); // More opaque at the wall
     topGradient.addColorStop(1, `rgba(${baseColor}, 0)`);    // Fades to transparent
     ctx.fillStyle = topGradient;
-    ctx.fillRect(0, pipeTopY, width, thickness);
-
-    // Bottom Layer Gradient
-    const bottomGradient = ctx.createLinearGradient(0, pipeBottomY - thickness, 0, pipeBottomY);
+    ctx.fillRect(0, pipeTopY, width, boundaryThickness);
+    const bottomGradient = ctx.createLinearGradient(0, pipeBottomY - boundaryThickness, 0, pipeBottomY);
     bottomGradient.addColorStop(0, `rgba(${baseColor}, 0)`);
-    bottomGradient.addColorStop(1, `rgba(${baseColor}, 0.35)`);
+    bottomGradient.addColorStop(1, `rgba(${baseColor}, 0.5)`);
     ctx.fillStyle = bottomGradient;
-    ctx.fillRect(0, pipeBottomY - thickness, width, thickness);
+    ctx.fillRect(0, pipeBottomY - boundaryThickness, width, boundaryThickness);
+    
+    // --- Viscous Sublayer (Blueish) ---
+    const sublayerColor = '74, 144, 226'; // A contrasting blue
+    const topSublayerGradient = ctx.createLinearGradient(0, pipeTopY, 0, pipeTopY + viscousSublayerThickness);
+    topSublayerGradient.addColorStop(0, `rgba(${sublayerColor}, 0.65)`);
+    topSublayerGradient.addColorStop(1, `rgba(${sublayerColor}, 0)`);
+    ctx.fillStyle = topSublayerGradient;
+    ctx.fillRect(0, pipeTopY, width, viscousSublayerThickness);
+    const bottomSublayerGradient = ctx.createLinearGradient(0, pipeBottomY - viscousSublayerThickness, 0, pipeBottomY);
+    bottomSublayerGradient.addColorStop(0, `rgba(${sublayerColor}, 0)`);
+    bottomSublayerGradient.addColorStop(1, `rgba(${sublayerColor}, 0.65)`);
+    ctx.fillStyle = bottomSublayerGradient;
+    ctx.fillRect(0, pipeBottomY - viscousSublayerThickness, width, viscousSublayerThickness);
 
-    // --- Animated Shimmering Edge ---
+
+    // --- Animated Shimmering Edge for main boundary layer ---
     const waveAmplitude = 1.5;
     const waveFrequency = 0.005;
     const waveSpeed = 0.0005;
 
     ctx.beginPath();
-    ctx.moveTo(0, pipeTopY + thickness);
+    ctx.moveTo(0, pipeTopY + boundaryThickness);
     for (let x = 0; x < width; x++) {
         const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
-        ctx.lineTo(x, pipeTopY + thickness + yOffset);
+        ctx.lineTo(x, pipeTopY + boundaryThickness + yOffset);
     }
     ctx.strokeStyle = `rgba(${baseColor}, 0.5)`;
     ctx.lineWidth = 1;
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.moveTo(0, pipeBottomY - thickness);
+    ctx.moveTo(0, pipeBottomY - boundaryThickness);
     for (let x = 0; x < width; x++) {
         const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
-        ctx.lineTo(x, pipeBottomY - thickness - yOffset);
+        ctx.lineTo(x, pipeBottomY - boundaryThickness - yOffset);
     }
     ctx.strokeStyle = `rgba(${baseColor}, 0.5)`;
     ctx.lineWidth = 1;
@@ -752,19 +765,31 @@ const drawArrow = (ctx: CanvasRenderingContext2D, fromX: number, fromY: number, 
 const drawFormattedText = (ctx: CanvasRenderingContext2D, lines: string[], startX: number, startY: number, lineHeight: number) => {
     ctx.textBaseline = 'top';
     let currentY = startY;
+    const regularFont = '12px "Roboto", sans-serif';
+    const boldFont = 'bold 12px "Roboto", sans-serif';
 
     lines.forEach(line => {
-        let textToDraw = line;
-        let isBold = line.startsWith('<b>');
-        if (isBold) {
-            ctx.font = 'bold 12px "Roboto", sans-serif';
-            textToDraw = line.replace(/<b>|<\/b>/g, '');
-        } else {
-            ctx.font = '12px "Roboto", sans-serif';
-        }
-        
-        ctx.fillStyle = 'white';
-        ctx.fillText(textToDraw, startX, currentY);
+        // Split the line by <b> and </b> tags, keeping the delimiters
+        const parts = line.split(/(<b>|<\/b>)/).filter(p => p);
+        let currentX = startX;
+        let isBold = false;
+
+        parts.forEach(part => {
+            if (part === '<b>') {
+                isBold = true;
+                return; // Continue to next part
+            }
+            if (part === '</b>') {
+                isBold = false;
+                return; // Continue to next part
+            }
+
+            ctx.font = isBold ? boldFont : regularFont;
+            ctx.fillStyle = 'white';
+            ctx.fillText(part, currentX, currentY);
+            currentX += ctx.measureText(part).width;
+        });
+
         currentY += lineHeight;
     });
 }
@@ -796,15 +821,32 @@ const drawInfoBox = (
 
     // --- DYNAMIC WIDTH CALCULATION ---
     let maxWidth = 0;
+    const regularFont = '12px "Roboto", sans-serif';
+    const boldFont = 'bold 12px "Roboto", sans-serif';
     // Measure title width
     ctx.font = 'bold 13px "Roboto", sans-serif';
     maxWidth = Math.max(maxWidth, ctx.measureText(title).width);
     // Measure content lines width
     lines.forEach(line => {
-        const isBold = line.startsWith('<b>');
-        ctx.font = isBold ? 'bold 12px "Roboto", sans-serif' : '12px "Roboto", sans-serif';
-        const textToMeasure = line.replace(/<b>|<\/b>/g, '');
-        maxWidth = Math.max(maxWidth, ctx.measureText(textToMeasure).width);
+        const parts = line.split(/(<b>|<\/b>)/).filter(p => p);
+        let currentLineWidth = 0;
+        let isBold = false;
+
+        parts.forEach(part => {
+            if (part === '<b>') {
+                isBold = true;
+                return;
+            }
+            if (part === '</b>') {
+                isBold = false;
+                return;
+            }
+
+            ctx.font = isBold ? boldFont : regularFont;
+            currentLineWidth += ctx.measureText(part).width;
+        });
+        
+        maxWidth = Math.max(maxWidth, currentLineWidth);
     });
     const boxWidth = maxWidth + padding * 2;
     // --- END DYNAMIC WIDTH CALCULATION ---
@@ -914,9 +956,9 @@ function drawExplanationOverlay(
             drawInfoBox(ctx, 'Complete Turbulence Impact', [
                 '<b>Friction Driver:</b> Pipe Roughness',
                 '<b>Pressure Drop:</b> Maximum',
-                'Friction is now independent of Re.',
-                'Further increases in velocity do not',
-                'make the flow "smoother".',
+                'The turbulent boundary layer is thin and the',
+                'viscous sublayer barely covers wall roughness,',
+                'causing high friction.',
                 '∙ Note: Darcy f_D = 4 x Fanning f'
             ], easeOutProgress, 'explain-fullyturb-infobox');
         } else { // Partially turbulent
@@ -925,9 +967,10 @@ function drawExplanationOverlay(
             drawInfoBox(ctx, 'Partial Turbulence Impact', [
                 '<b>Friction Driver:</b> Re & Roughness',
                 '<b>Pressure Drop:</b> High',
-                'The boundary layer partially shields',
-                'the main flow from the pipe wall,',
-                'but mixing still causes high energy loss.',
+                'A boundary layer shields the main flow, but',
+                'its viscous sublayer is key. The interplay',
+                'between sublayer thickness and wall roughness',
+                'governs friction.',
                 '∙ Note: Darcy f_D = 4 x Fanning f'
             ], easeOutProgress, 'explain-partturb-infobox');
         }
@@ -943,15 +986,17 @@ function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     const height = ctx.canvas.clientHeight;
 
     const wallBaseY = height * 0.8;
-    const zoomFactor = 2000; // Exaggerate roughness for visibility
+    const zoomFactor = 2000;
     const roughnessHeight = absRoughness * zoomFactor;
 
-    // The viscous sublayer gets thinner as Re increases.
-    const sublayerThickness = mapLog(re, 2301, RE_MAX, 80, 5);
-    const sublayerTopY = wallBaseY - sublayerThickness;
+    // The layers get thinner as Re increases.
+    const boundaryLayerThickness = mapLog(re, 2301, RE_MAX, 100, 40);
+    const viscousSublayerThickness = mapLog(re, 2301, RE_MAX, 40, 5); // Thinner than boundary layer
+    const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
+    const viscousSublayerTopY = wallBaseY - viscousSublayerThickness;
     
-    // --- Draw Wall & Sublayer ---
-    ctx.fillStyle = '#4a5568';
+    // --- Draw Wall & Layers ---
+    ctx.fillStyle = '#4a5568'; // Wall material
     ctx.beginPath();
     ctx.moveTo(0, height);
     ctx.lineTo(0, wallBaseY);
@@ -963,49 +1008,61 @@ function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     ctx.closePath();
     ctx.fill();
     
-    // Draw viscous sublayer
-    const sublayerGradient = ctx.createLinearGradient(0, sublayerTopY, 0, wallBaseY);
+    // Draw turbulent boundary layer (reddish, more transparent)
+    const boundaryGradient = ctx.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
+    boundaryGradient.addColorStop(0, 'rgba(233, 69, 96, 0)');
+    boundaryGradient.addColorStop(1, 'rgba(233, 69, 96, 0.4)');
+    ctx.fillStyle = boundaryGradient;
+    ctx.fillRect(0, boundaryLayerTopY, width, boundaryLayerThickness);
+
+    // Draw viscous sublayer (blueish, more opaque near wall)
+    const sublayerGradient = ctx.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
     sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0)');
-    sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.5)');
+    sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.65)');
     ctx.fillStyle = sublayerGradient;
-    ctx.fillRect(0, sublayerTopY, width, sublayerThickness);
+    ctx.fillRect(0, viscousSublayerTopY, width, viscousSublayerThickness);
     
     // --- Draw Annotations ---
     ctx.save();
     ctx.strokeStyle = 'white';
     ctx.lineWidth = 1.5;
 
-    const isSmooth = sublayerThickness > roughnessHeight;
+    // The key comparison is if roughness pierces the viscous sublayer
+    const isSmooth = viscousSublayerThickness > roughnessHeight;
 
     if (isSmooth) {
         drawInfoBox(ctx, 'Hydraulically Smooth Flow', [
-            'The viscous sublayer is thicker than the',
-            'roughness elements, effectively "hiding"',
-            'them from the main flow.',
-            '<b>Friction Driver:</b> Fluid Viscosity (Re)',
-            'Particles flow smoothly over the buffered surface.'
+            'The <b>viscous sublayer</b> is thicker than the',
+            'roughness elements. It acts as a smooth',
+            'buffer, "hiding" the wall from the chaotic',
+            '<b>turbulent boundary layer</b>.',
+            '<b>Friction Driver:</b> Fluid Viscosity (Re)'
         ], 1.0, 'boundary-infobox');
 
-        const textRect = drawTextWithBackground(ctx, 'Roughness elements buried in sublayer', width / 2, wallBaseY - roughnessHeight - 20, 'center', 'boundary-text-1');
+        const textRect = drawTextWithBackground(ctx, 'Roughness buried in sublayer', width / 2, wallBaseY - roughnessHeight - 20, 'center', 'boundary-text-1');
         drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
     } else {
         drawInfoBox(ctx, 'Rough Flow', [
-            'Roughness elements pierce the viscous sublayer,',
-            'entering the faster-moving turbulent flow.',
-            '<b>Friction Driver:</b> Pipe Roughness (ε)',
-            'Collisions create eddies, causing significant',
-            'energy loss.'
+            'Roughness elements pierce the thin <b>viscous',
+            'sublayer</b>, disrupting the <b>turbulent',
+            'boundary layer</b> above.',
+            'This creates eddies and form drag.',
+            '<b>Friction Driver:</b> Pipe Roughness (ε)'
         ], 1.0, 'boundary-infobox');
         const textRect = drawTextWithBackground(ctx, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - roughnessHeight - 40, 'center', 'boundary-text-1');
         drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - roughnessHeight + 5);
     }
     
-    // Label sublayer
-    const sublayerRect = drawTextWithBackground(ctx, 'Viscous Sublayer', 150, sublayerTopY + sublayerThickness / 2, 'center', 'boundary-sublayer-label');
-    const arrowFromX = sublayerRect.x + sublayerRect.width / 2;
-    const arrowY = sublayerRect.y; // Y is middle, so draw from here
-    drawArrow(ctx, arrowFromX, arrowY - sublayerRect.height / 2, arrowFromX, sublayerTopY);
-    drawArrow(ctx, arrowFromX, arrowY + sublayerRect.height / 2, arrowFromX, wallBaseY);
+    // Label Layers
+    const boundaryLabelY = boundaryLayerTopY + (viscousSublayerTopY - boundaryLayerTopY) / 2;
+    const boundaryRect = drawTextWithBackground(ctx, 'Turbulent Layer', 120, boundaryLabelY, 'center', 'boundary-boundary-label');
+    drawArrow(ctx, boundaryRect.x, boundaryRect.y - boundaryRect.height / 2, boundaryRect.x, boundaryLayerTopY);
+    drawArrow(ctx, boundaryRect.x, boundaryRect.y + boundaryRect.height / 2, boundaryRect.x, viscousSublayerTopY);
+
+    const sublayerLabelY = viscousSublayerTopY + viscousSublayerThickness / 2;
+    const sublayerRect = drawTextWithBackground(ctx, 'Viscous Sublayer', width - 120, sublayerLabelY, 'center', 'boundary-sublayer-label');
+    drawArrow(ctx, sublayerRect.x, sublayerRect.y - sublayerRect.height / 2, sublayerRect.x, viscousSublayerTopY);
+    drawArrow(ctx, sublayerRect.x, sublayerRect.y + sublayerRect.height / 2, sublayerRect.x, wallBaseY);
 
     ctx.restore();
 }
@@ -1021,10 +1078,12 @@ function drawPipeWallDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     const roughnessHeight = absRoughness * zoomFactor;
     const wallBaseY = height * 0.75; // Wall takes up most of the view
 
-    const sublayerThickness = mapLog(re, 2301, RE_MAX, 150, 10); // Thicker on screen for visibility
-    const sublayerTopY = wallBaseY - sublayerThickness;
+    const boundaryLayerThickness = mapLog(re, 2301, RE_MAX, 250, 80); // Scaled for extreme zoom
+    const viscousSublayerThickness = mapLog(re, 2301, RE_MAX, 80, 10);
+    const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
+    const viscousSublayerTopY = wallBaseY - viscousSublayerThickness;
 
-    // --- Draw Wall & Sublayer ---
+    // --- Draw Wall & Layers ---
     ctx.fillStyle = '#3b4453'; // Slightly lighter wall color for detail
     ctx.fillRect(0, wallBaseY, width, height - wallBaseY);
     ctx.fillStyle = '#4a5568';
@@ -1039,53 +1098,63 @@ function drawPipeWallDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     ctx.closePath();
     ctx.fill();
 
+    // Draw turbulent boundary layer (very transparent, just a hint)
+    const boundaryGradient = ctx.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
+    boundaryGradient.addColorStop(0, 'rgba(233, 69, 96, 0)');
+    boundaryGradient.addColorStop(1, 'rgba(233, 69, 96, 0.35)');
+    ctx.fillStyle = boundaryGradient;
+    ctx.fillRect(0, boundaryLayerTopY, width, boundaryLayerThickness);
+
     // Draw viscous sublayer
-    const sublayerGradient = ctx.createLinearGradient(0, sublayerTopY, 0, wallBaseY);
+    const sublayerGradient = ctx.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
     sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0)');
-    sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.5)');
+    sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.65)');
     ctx.fillStyle = sublayerGradient;
-    ctx.fillRect(0, sublayerTopY, width, height - sublayerTopY);
+    ctx.fillRect(0, viscousSublayerTopY, width, viscousSublayerThickness);
 
     // --- Draw Annotations ---
     ctx.save();
     ctx.strokeStyle = 'white';
     ctx.lineWidth = 1.5;
 
-    const isSmooth = sublayerThickness > roughnessHeight;
+    const isSmooth = viscousSublayerThickness > roughnessHeight;
     const roughnessPeakX = width / 2;
     const roughnessPeakY = wallBaseY - roughnessProfile[Math.floor(roughnessPeakX)] * roughnessHeight;
 
     if (isSmooth) {
         drawInfoBox(ctx, 'Wall View: Hydraulically Smooth', [
-            '<b>Condition:</b> Viscous Sublayer > Roughness (ε)',
-            'The sublayer engulfs the wall texture, creating',
-            'a "smooth" buffer. The main flow does not',
-            'interact with the wall. Friction is driven by',
-            'fluid viscosity.',
-            '∙ Particles glide smoothly over the buffered zone.'
+            'The <b>viscous sublayer</b> is thick enough to',
+            'completely submerge the wall roughness (ε).',
+            'It acts as a slick cushion, preventing the',
+            'chaotic <b>turbulent layer</b> from interacting',
+            'with the wall.',
+            '∙ Friction is driven by fluid viscosity.'
         ], 1.0, 'wall-infobox');
         
-        const peakRect = drawTextWithBackground(ctx, 'Roughness Peak (ε)', roughnessPeakX, roughnessPeakY - 20, 'center', 'wall-peak-label');
+        const peakRect = drawTextWithBackground(ctx, 'Submerged Peak (ε)', roughnessPeakX, roughnessPeakY - 20, 'center', 'wall-peak-label');
         drawArrow(ctx, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, roughnessPeakX, roughnessPeakY);
         
-        const sublayerRect = drawTextWithBackground(ctx, 'Sublayer completely covers peaks', 180, sublayerTopY - 20, 'center', 'wall-sublayer-label');
-        drawArrow(ctx, sublayerRect.x + sublayerRect.width / 2, sublayerRect.y + sublayerRect.height, 180, sublayerTopY);
+        const sublayerRect = drawTextWithBackground(ctx, 'Thick viscous sublayer', 180, viscousSublayerTopY - 20, 'center', 'wall-sublayer-label');
+        drawArrow(ctx, sublayerRect.x + sublayerRect.width / 2, sublayerRect.y + sublayerRect.height, 180, viscousSublayerTopY);
     } else {
         drawInfoBox(ctx, 'Wall View: Rough Flow', [
-            '<b>Condition:</b> Roughness (ε) > Viscous Sublayer',
-            'Peaks protrude into the flow, creating form drag',
-            'and chaotic eddies. This significantly increases',
-            'energy loss.',
-            '∙ Friction is dominated by physical obstructions.',
-            '∙ Particles can be trapped, dissipating energy.'
+            'The <b>viscous sublayer</b> is very thin, failing',
+            'to cover the roughness peaks (ε).',
+            'The peaks protrude, creating form drag and',
+            'disrupting the entire <b>turbulent layer</b>,',
+            'which causes significant energy loss.',
+            '∙ Friction is dominated by physical obstructions.'
         ], 1.0, 'wall-infobox');
         
         const peakRect = drawTextWithBackground(ctx, 'Exposed Peak creates drag', roughnessPeakX, roughnessPeakY - 20, 'center', 'wall-peak-label');
         drawArrow(ctx, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, roughnessPeakX, roughnessPeakY);
 
-        const sublayerRect = drawTextWithBackground(ctx, 'Thin sublayer fails to cover wall', 150, wallBaseY - sublayerThickness - 20, 'center', 'wall-sublayer-label');
-        drawArrow(ctx, sublayerRect.x + sublayerRect.width / 2, sublayerRect.y + sublayerRect.height, 150, wallBaseY - sublayerThickness);
+        const sublayerRect = drawTextWithBackground(ctx, 'Thin viscous sublayer', 150, viscousSublayerTopY - 20, 'center', 'wall-sublayer-label');
+        drawArrow(ctx, sublayerRect.x + sublayerRect.width / 2, sublayerRect.y + sublayerRect.height, 150, viscousSublayerTopY);
     }
+    const turbulentLabelRect = drawTextWithBackground(ctx, 'Turbulent Layer', 100, boundaryLayerTopY - 20, 'left', 'wall-boundary-label');
+    drawArrow(ctx, turbulentLabelRect.x + turbulentLabelRect.width / 2, turbulentLabelRect.y + turbulentLabelRect.height, turbulentLabelRect.x + turbulentLabelRect.width / 2, boundaryLayerTopY);
+    
     ctx.restore();
 }
 
@@ -1204,12 +1273,12 @@ function animateDetailView(time: number) {
 
     const zoomFactor = 2000;
     const roughnessHeight = absoluteRoughnessIN * zoomFactor;
-    const sublayerThickness = mapLog(currentRe, 2301, RE_MAX, 80, 5);
+    const viscousSublayerThickness = mapLog(currentRe, 2301, RE_MAX, 40, 5);
     
     drawBoundaryDetailView(ctx, currentRe, absoluteRoughnessIN);
 
     particles.forEach(p => {
-        updateParticleInDetailView(p, currentRe, roughnessHeight, sublayerThickness);
+        updateParticleInDetailView(p, currentRe, roughnessHeight, viscousSublayerThickness);
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
@@ -1225,12 +1294,12 @@ function animatePipeWallDetailView(time: number) {
 
     const zoomFactor = 10000;
     const roughnessHeight = absoluteRoughnessIN * zoomFactor;
-    const sublayerThickness = mapLog(currentRe, 2301, RE_MAX, 150, 10);
+    const viscousSublayerThickness = mapLog(currentRe, 2301, RE_MAX, 80, 10);
     
     drawPipeWallDetailView(ctx, currentRe, absoluteRoughnessIN);
 
     particles.forEach(p => {
-        updateParticleInWallDetailView(p, currentRe, roughnessHeight, sublayerThickness);
+        updateParticleInWallDetailView(p, currentRe, roughnessHeight, viscousSublayerThickness);
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
