@@ -81,12 +81,16 @@ const diagramTabContent = document.getElementById('diagram-tab-content') as HTML
 const aboutTabContent = document.getElementById('about-tab-content') as HTMLDivElement;
 const presentationTabContent = document.getElementById('presentation-tab-content') as HTMLDivElement;
 
+const ipadProBtn = document.getElementById('ipad-pro-btn') as HTMLButtonElement;
+const fullScreenBtn = document.getElementById('fullscreen-btn') as HTMLButtonElement;
+
 
 // --- Constants & State ---
 const PARTICLE_COUNT = 300;
 const WALL_BUFFER = 5;
 const LERP_FACTOR = 0.05; // Smoothing factor for transitions
 const RE_MAX = 30000000;
+const TRANSITION_DURATION = 500; // ms for view transitions
 
 const ROUGHNESS_LEVELS = [
     { id: 'curve-0_05', value: 0.05, label: '0.05000' }, { id: 'curve-0_04', value: 0.04, label: '0.04000' },
@@ -109,7 +113,6 @@ let currentProfile: number[] = [];
 let showExplanation = false;
 let explanationAnimationStartTimestamp: number | null = null;
 let roughnessProfile: number[] = [];
-let minRoughnessValue = 1.0;
 
 // --- Dynamic State ---
 let currentViewMode: ViewMode = 'full';
@@ -124,6 +127,15 @@ let activeEquations = {
     igt: false,
     aga: false
 };
+
+// --- State for View Transitions ---
+let isTransitioning = false;
+let transitionProgress = 0;
+let transitionStartTime: number | null = null;
+let transitionSourceView: ViewMode | null = null;
+let transitionTargetView: ViewMode | null = null;
+let isFullScreenRequestPending = false;
+
 
 // --- State for Draggable Annotations ---
 const annotationOffsets: Map<string, {x: number, y: number}> = new Map();
@@ -182,8 +194,9 @@ function getFlowProperties(re: number, roughness: number): { friction: number, s
     if (roughness > 0) {
         const viscousTerm = 2.51 / (re * Math.sqrt(f_approx));
         const roughnessTerm = roughness / 3.7;
-        // If the viscous term is less than 2% of the roughness term, it's negligible.
-        if (viscousTerm < 0.02 * roughnessTerm) {
+        // If the viscous term is less than 5% (was 2%) of the roughness term, it's considered negligible.
+        // This adjustment ensures the "Fully Turbulent" preset reliably triggers this state.
+        if (viscousTerm < 0.05 * roughnessTerm) {
             const friction = calculateAgaFriction(roughness);
             return { friction, state: 'fully-turbulent' };
         }
@@ -386,14 +399,10 @@ function initParticles() {
     }
      // Create a random profile for the bumpy wall in the detail view
     roughnessProfile = [];
-    minRoughnessValue = 1.0;
     const width = Math.max(1, canvas.clientWidth); // Ensure width is at least 1
     for (let i = 0; i < width; i++) {
         const r = Math.random();
         roughnessProfile.push(r);
-        if (r < minRoughnessValue) {
-            minRoughnessValue = r;
-        }
     }
 }
 
@@ -441,7 +450,7 @@ function updateParticleInFullView(p: Particle, re: number, f: number) {
 }
 
 function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: number, viscousSublayerThickness: number) {
-    const wallBaseY = canvas.clientHeight * 0.8;
+    const wallBaseY = canvas.clientHeight * 0.9;
     const roughnessXIndex = Math.max(0, Math.min(Math.floor(p.x), roughnessProfile.length - 1));
     const physicalWallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
     const sublayerTopY = wallBaseY - viscousSublayerThickness;
@@ -490,12 +499,26 @@ function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: nu
 }
 
 function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight: number, viscousSublayerThickness: number) {
-    const wallBaseY = canvas.clientHeight * 0.75;
+    const wallBaseY = canvas.clientHeight * 0.85;
     const sublayerTopY = wallBaseY - viscousSublayerThickness;
+
+    // Normalize the roughness profile so its values span from 0 to 1 exactly.
+    // This ensures consistency between physics and visuals.
+    let minProfile = 1.0;
+    let maxProfile = 0.0;
+    if (roughnessProfile.length > 0) {
+        for (const val of roughnessProfile) {
+            if (val < minProfile) minProfile = val;
+            if (val > maxProfile) maxProfile = val;
+        }
+    }
+    const profileRange = (maxProfile - minProfile) > 0 ? (maxProfile - minProfile) : 1;
 
     // Ensure index is within bounds, handling wrapping
     const roughnessXIndex = Math.floor(p.x + canvas.clientWidth) % canvas.clientWidth;
-    const physicalWallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
+    const normalizedProfileValue = (roughnessProfile[roughnessXIndex] - minProfile) / profileRange;
+    const physicalWallY = wallBaseY - normalizedProfileValue * roughnessHeight;
+
     const collisionSurfaceY = Math.min(physicalWallY, sublayerTopY);
 
     // 1. Update velocities based on current position
@@ -588,33 +611,33 @@ function drawVelocityProfile(profile: number[]) {
     vCtx.stroke();
 }
 
-function drawPipe3D() {
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
+function drawPipe3D(context: CanvasRenderingContext2D = ctx) {
+    const width = context.canvas.clientWidth;
+    const height = context.canvas.clientHeight;
     
     const pipeTopY = WALL_BUFFER;
     const pipeBottomY = height - WALL_BUFFER;
 
     // Draw the pipe walls
-    ctx.fillStyle = '#4a5568'; // A dark gray for the pipe material
+    context.fillStyle = '#4a5568'; // A dark gray for the pipe material
     // Top wall
-    ctx.fillRect(0, 0, width, pipeTopY);
+    context.fillRect(0, 0, width, pipeTopY);
     // Bottom wall
-    ctx.fillRect(0, pipeBottomY, width, height);
+    context.fillRect(0, pipeBottomY, width, height);
 
     // Add a highlight to the top inner edge for a 3D feel
-    const topHighlightGradient = ctx.createLinearGradient(0, pipeTopY, 0, pipeTopY + 5);
+    const topHighlightGradient = context.createLinearGradient(0, pipeTopY, 0, pipeTopY + 5);
     topHighlightGradient.addColorStop(0, 'rgba(255, 255, 255, 0.25)');
     topHighlightGradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-    ctx.fillStyle = topHighlightGradient;
-    ctx.fillRect(0, pipeTopY, width, 5);
+    context.fillStyle = topHighlightGradient;
+    context.fillRect(0, pipeTopY, width, 5);
     
     // Add a shadow to the bottom inner edge
-    const bottomShadowGradient = ctx.createLinearGradient(0, pipeBottomY - 5, 0, pipeBottomY);
+    const bottomShadowGradient = context.createLinearGradient(0, pipeBottomY - 5, 0, pipeBottomY);
     bottomShadowGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
     bottomShadowGradient.addColorStop(1, 'rgba(0, 0, 0, 0.4)');
-    ctx.fillStyle = bottomShadowGradient;
-    ctx.fillRect(0, pipeBottomY - 5, width, 5);
+    context.fillStyle = bottomShadowGradient;
+    context.fillRect(0, pipeBottomY - 5, width, 5);
 }
 
 /**
@@ -622,11 +645,11 @@ function drawPipe3D() {
  * This layer is only shown for turbulent flow, is more prominent, and has a
  * subtle shimmer effect to make it feel more dynamic.
  */
-function drawBoundaryLayer(ctx: CanvasRenderingContext2D, re: number, time: number) {
+function drawBoundaryLayer(context: CanvasRenderingContext2D, re: number, time: number) {
     if (re <= 2300) return; // Only show for transition/turbulent flow
 
-    const width = ctx.canvas.clientWidth;
-    const height = ctx.canvas.clientHeight;
+    const width = context.canvas.clientWidth;
+    const height = context.canvas.clientHeight;
     const pipeTopY = WALL_BUFFER;
     const pipeBottomY = height - WALL_BUFFER;
 
@@ -637,29 +660,29 @@ function drawBoundaryLayer(ctx: CanvasRenderingContext2D, re: number, time: numb
 
     // --- Main Turbulent Boundary Layer (Reddish) ---
     const baseColor = '233, 69, 96'; // App's secondary color (red-pink)
-    const topGradient = ctx.createLinearGradient(0, pipeTopY, 0, pipeTopY + boundaryThickness);
+    const topGradient = context.createLinearGradient(0, pipeTopY, 0, pipeTopY + boundaryThickness);
     topGradient.addColorStop(0, `rgba(${baseColor}, 0.5)`); // More opaque at the wall
     topGradient.addColorStop(1, `rgba(${baseColor}, 0)`);    // Fades to transparent
-    ctx.fillStyle = topGradient;
-    ctx.fillRect(0, pipeTopY, width, boundaryThickness);
-    const bottomGradient = ctx.createLinearGradient(0, pipeBottomY - boundaryThickness, 0, pipeBottomY);
+    context.fillStyle = topGradient;
+    context.fillRect(0, pipeTopY, width, boundaryThickness);
+    const bottomGradient = context.createLinearGradient(0, pipeBottomY - boundaryThickness, 0, pipeBottomY);
     bottomGradient.addColorStop(0, `rgba(${baseColor}, 0)`);
     bottomGradient.addColorStop(1, `rgba(${baseColor}, 0.5)`);
-    ctx.fillStyle = bottomGradient;
-    ctx.fillRect(0, pipeBottomY - boundaryThickness, width, boundaryThickness);
+    context.fillStyle = bottomGradient;
+    context.fillRect(0, pipeBottomY - boundaryThickness, width, boundaryThickness);
     
     // --- Viscous Sublayer (Blueish) ---
     const sublayerColor = '74, 144, 226'; // A contrasting blue
-    const topSublayerGradient = ctx.createLinearGradient(0, pipeTopY, 0, pipeTopY + viscousSublayerThickness);
+    const topSublayerGradient = context.createLinearGradient(0, pipeTopY, 0, pipeTopY + viscousSublayerThickness);
     topSublayerGradient.addColorStop(0, `rgba(${sublayerColor}, 0.65)`);
     topSublayerGradient.addColorStop(1, `rgba(${sublayerColor}, 0)`);
-    ctx.fillStyle = topSublayerGradient;
-    ctx.fillRect(0, pipeTopY, width, viscousSublayerThickness);
-    const bottomSublayerGradient = ctx.createLinearGradient(0, pipeBottomY - viscousSublayerThickness, 0, pipeBottomY);
+    context.fillStyle = topSublayerGradient;
+    context.fillRect(0, pipeTopY, width, viscousSublayerThickness);
+    const bottomSublayerGradient = context.createLinearGradient(0, pipeBottomY - viscousSublayerThickness, 0, pipeBottomY);
     bottomSublayerGradient.addColorStop(0, `rgba(${sublayerColor}, 0)`);
     bottomSublayerGradient.addColorStop(1, `rgba(${sublayerColor}, 0.65)`);
-    ctx.fillStyle = bottomSublayerGradient;
-    ctx.fillRect(0, pipeBottomY - viscousSublayerThickness, width, viscousSublayerThickness);
+    context.fillStyle = bottomSublayerGradient;
+    context.fillRect(0, pipeBottomY - viscousSublayerThickness, width, viscousSublayerThickness);
 
 
     // --- Animated Shimmering Edge for main boundary layer ---
@@ -667,31 +690,68 @@ function drawBoundaryLayer(ctx: CanvasRenderingContext2D, re: number, time: numb
     const waveFrequency = 0.005;
     const waveSpeed = 0.0005;
 
-    ctx.beginPath();
-    ctx.moveTo(0, pipeTopY + boundaryThickness);
+    context.beginPath();
+    context.moveTo(0, pipeTopY + boundaryThickness);
     for (let x = 0; x < width; x++) {
         const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
-        ctx.lineTo(x, pipeTopY + boundaryThickness + yOffset);
+        context.lineTo(x, pipeTopY + boundaryThickness + yOffset);
     }
-    ctx.strokeStyle = `rgba(${baseColor}, 0.5)`;
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    context.strokeStyle = `rgba(${baseColor}, 0.5)`;
+    context.lineWidth = 1;
+    context.stroke();
 
-    ctx.beginPath();
-    ctx.moveTo(0, pipeBottomY - boundaryThickness);
+    context.beginPath();
+    context.moveTo(0, pipeBottomY - boundaryThickness);
     for (let x = 0; x < width; x++) {
         const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
-        ctx.lineTo(x, pipeBottomY - boundaryThickness - yOffset);
+        context.lineTo(x, pipeBottomY - boundaryThickness - yOffset);
     }
-    ctx.strokeStyle = `rgba(${baseColor}, 0.5)`;
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    context.strokeStyle = `rgba(${baseColor}, 0.5)`;
+    context.lineWidth = 1;
+    context.stroke();
 }
 
 
 // --- Helper Functions for Drawing ---
+/**
+ * Calculates the optimal anchor point on a rectangle's border for an arrow
+ * pointing to a target, ensuring the arrow starts at the edge and never
+ * passes through the box.
+ * @param box The bounding box of the annotation.
+ * @param toX The x-coordinate of the arrow's target.
+ * @param toY The y-coordinate of the arrow's target.
+ * @returns The {x, y} coordinates for the arrow's starting point.
+ */
+const getArrowAnchorPoint = (box: { x: number; y: number; width: number; height: number; }, toX: number, toY: number): { x: number, y: number } => {
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const dx = toX - cx;
+    const dy = toY - cy;
+    const halfW = box.width / 2;
+    const halfH = box.height / 2;
+
+    // If target is inside, start from target itself to create a zero-length arrow
+    if (Math.abs(dx) <= halfW && Math.abs(dy) <= halfH) {
+        return { x: toX, y: toY };
+    }
+
+    // Determine which edge the line from the center to the target intersects with
+    // by comparing the slopes of the line and the box's diagonals.
+    if (Math.abs(dx) * halfH > Math.abs(dy) * halfW) {
+        // Intersects with left or right edge
+        const x = cx + (dx > 0 ? halfW : -halfW);
+        const y = cy + dy * (halfW / Math.abs(dx));
+        return { x, y };
+    } else {
+        // Intersects with top or bottom edge
+        const x = cx + dx * (halfH / Math.abs(dy));
+        const y = cy + (dy > 0 ? halfH : -halfH);
+        return { x, y };
+    }
+};
+
 const drawTextWithBackground = (
-    ctx: CanvasRenderingContext2D,
+    context: CanvasRenderingContext2D,
     text: string,
     x: number,
     y: number,
@@ -706,11 +766,11 @@ const drawTextWithBackground = (
         finalY += offset.y;
     }
 
-    ctx.font = 'bold 14px "Roboto", sans-serif';
-    ctx.textAlign = textAlign;
-    ctx.textBaseline = 'middle';
+    context.font = 'bold 14px "Roboto", sans-serif';
+    context.textAlign = textAlign;
+    context.textBaseline = 'middle';
 
-    const textMetrics = ctx.measureText(text);
+    const textMetrics = context.measureText(text);
     const hPadding = 15; // Increased horizontal padding
     const vPadding = 12; // Increased vertical padding
     const textHeight = (textMetrics.actualBoundingBoxAscent || 14) + (textMetrics.actualBoundingBoxDescent || 2);
@@ -724,16 +784,16 @@ const drawTextWithBackground = (
     
     const rectY = finalY - rectHeight / 2;
 
-    ctx.fillStyle = 'rgba(22, 33, 62, 0.85)';
-    ctx.strokeStyle = '#e94560'; // Red border for consistency
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(rectX, rectY, rectWidth, rectHeight, 6);
-    ctx.fill();
-    ctx.stroke();
+    context.fillStyle = 'rgba(22, 33, 62, 0.85)';
+    context.strokeStyle = '#e94560'; // Red border for consistency
+    context.lineWidth = 1;
+    context.beginPath();
+    context.roundRect(rectX, rectY, rectWidth, rectHeight, 6);
+    context.fill();
+    context.stroke();
     
-    ctx.fillStyle = 'white';
-    ctx.fillText(text, finalX, finalY);
+    context.fillStyle = 'white';
+    context.fillText(text, finalX, finalY);
     
     const hitbox = { x: rectX, y: rectY, width: rectWidth, height: rectHeight };
     if (id) {
@@ -742,28 +802,28 @@ const drawTextWithBackground = (
     return hitbox;
 };
 
-const drawArrow = (ctx: CanvasRenderingContext2D, fromX: number, fromY: number, toX: number, toY: number, progress = 1.0, headLength = 8) => {
+const drawArrow = (context: CanvasRenderingContext2D, fromX: number, fromY: number, toX: number, toY: number, progress = 1.0, headLength = 8) => {
     const dx = toX - fromX;
     const dy = toY - fromY;
     const currentToX = fromX + dx * progress;
     const currentToY = fromY + dy * progress;
     const angle = Math.atan2(dy, dx);
     
-    ctx.beginPath();
-    ctx.moveTo(fromX, fromY);
-    ctx.lineTo(currentToX, currentToY);
+    context.beginPath();
+    context.moveTo(fromX, fromY);
+    context.lineTo(currentToX, currentToY);
     
     if (progress === 1.0) {
-        ctx.moveTo(currentToX, currentToY);
-        ctx.lineTo(currentToX - headLength * Math.cos(angle - Math.PI / 6), currentToY - headLength * Math.sin(angle - Math.PI / 6));
-        ctx.moveTo(currentToX, currentToY);
-        ctx.lineTo(currentToX - headLength * Math.cos(angle + Math.PI / 6), currentToY - headLength * Math.sin(angle + Math.PI / 6));
+        context.moveTo(currentToX, currentToY);
+        context.lineTo(currentToX - headLength * Math.cos(angle - Math.PI / 6), currentToY - headLength * Math.sin(angle - Math.PI / 6));
+        context.moveTo(currentToX, currentToY);
+        context.lineTo(currentToX - headLength * Math.cos(angle + Math.PI / 6), currentToY - headLength * Math.sin(angle + Math.PI / 6));
     }
-    ctx.stroke();
+    context.stroke();
 };
 
-const drawFormattedText = (ctx: CanvasRenderingContext2D, lines: string[], startX: number, startY: number, lineHeight: number) => {
-    ctx.textBaseline = 'top';
+const drawFormattedText = (context: CanvasRenderingContext2D, lines: string[], startX: number, startY: number, lineHeight: number) => {
+    context.textBaseline = 'top';
     let currentY = startY;
     const regularFont = '12px "Roboto", sans-serif';
     const boldFont = 'bold 12px "Roboto", sans-serif';
@@ -784,10 +844,10 @@ const drawFormattedText = (ctx: CanvasRenderingContext2D, lines: string[], start
                 return; // Continue to next part
             }
 
-            ctx.font = isBold ? boldFont : regularFont;
-            ctx.fillStyle = 'white';
-            ctx.fillText(part, currentX, currentY);
-            currentX += ctx.measureText(part).width;
+            context.font = isBold ? boldFont : regularFont;
+            context.fillStyle = 'white';
+            context.fillText(part, currentX, currentY);
+            currentX += context.measureText(part).width;
         });
 
         currentY += lineHeight;
@@ -795,11 +855,12 @@ const drawFormattedText = (ctx: CanvasRenderingContext2D, lines: string[], start
 }
 
 const drawInfoBox = (
-    ctx: CanvasRenderingContext2D,
+    context: CanvasRenderingContext2D,
     title: string,
     lines: string[],
     easeOutProgress = 1.0,
-    id?: string
+    id?: string,
+    coords?: { x: number; y: number }
 ) => {
     let offsetX = 0;
     let offsetY = 0;
@@ -809,71 +870,64 @@ const drawInfoBox = (
         const offset = annotationOffsets.get(id) || { x: 0, y: 0 };
         offsetX = offset.x;
         offsetY = offset.y;
-        // Stop animating if it has been dragged
         if (annotationOffsets.has(id)) {
             easeOffset = 0;
         }
     }
 
     const lineHeight = 18;
-    const padding = 15; // Generous padding
+    const padding = 15;
     const titleHeight = 22;
 
-    // --- DYNAMIC WIDTH CALCULATION ---
     let maxWidth = 0;
     const regularFont = '12px "Roboto", sans-serif';
     const boldFont = 'bold 12px "Roboto", sans-serif';
-    // Measure title width
-    ctx.font = 'bold 13px "Roboto", sans-serif';
-    maxWidth = Math.max(maxWidth, ctx.measureText(title).width);
-    // Measure content lines width
+    context.font = 'bold 13px "Roboto", sans-serif';
+    maxWidth = Math.max(maxWidth, context.measureText(title).width);
     lines.forEach(line => {
         const parts = line.split(/(<b>|<\/b>)/).filter(p => p);
         let currentLineWidth = 0;
         let isBold = false;
-
         parts.forEach(part => {
-            if (part === '<b>') {
-                isBold = true;
-                return;
-            }
-            if (part === '</b>') {
-                isBold = false;
-                return;
-            }
-
-            ctx.font = isBold ? boldFont : regularFont;
-            currentLineWidth += ctx.measureText(part).width;
+            if (part === '<b>') { isBold = true; return; }
+            if (part === '</b>') { isBold = false; return; }
+            context.font = isBold ? boldFont : regularFont;
+            currentLineWidth += context.measureText(part).width;
         });
-        
         maxWidth = Math.max(maxWidth, currentLineWidth);
     });
     const boxWidth = maxWidth + padding * 2;
-    // --- END DYNAMIC WIDTH CALCULATION ---
-
     const boxHeight = padding * 2 + titleHeight + (lines.length * lineHeight);
-    const boxX = 15 + easeOffset;
-    const boxY = ctx.canvas.clientHeight - boxHeight - 15;
+
+    let boxX, boxY;
+    if (coords) {
+        // Use provided coordinates as the top-left corner, applying ease-in if not dragged
+        boxX = coords.x + (annotationOffsets.has(id || '') ? 0 : easeOffset);
+        boxY = coords.y;
+    } else {
+        // Default to bottom-left if no coords are provided
+        boxX = 15 + easeOffset;
+        boxY = context.canvas.clientHeight - boxHeight - 15;
+    }
 
     const finalX = boxX + offsetX;
     const finalY = boxY + offsetY;
 
+    context.fillStyle = 'rgba(22, 33, 62, 0.85)';
+    context.strokeStyle = '#e94560';
+    context.lineWidth = 1;
+    context.beginPath();
+    context.roundRect(finalX, finalY, boxWidth, boxHeight, 8);
+    context.fill();
+    context.stroke();
 
-    ctx.fillStyle = 'rgba(22, 33, 62, 0.85)';
-    ctx.strokeStyle = '#e94560';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(finalX, finalY, boxWidth, boxHeight, 8);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#e94560';
-    ctx.font = 'bold 13px "Roboto", sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    ctx.fillText(title, finalX + padding, finalY + padding);
+    context.fillStyle = '#e94560';
+    context.font = 'bold 13px "Roboto", sans-serif';
+    context.textAlign = 'left';
+    context.textBaseline = 'top';
+    context.fillText(title, finalX + padding, finalY + padding);
     
-    drawFormattedText(ctx, lines, finalX + padding, finalY + padding + titleHeight, lineHeight);
+    drawFormattedText(context, lines, finalX + padding, finalY + padding + titleHeight, lineHeight);
 
     const hitbox = { x: finalX, y: finalY, width: boxWidth, height: boxHeight };
     if (id) {
@@ -887,7 +941,7 @@ const drawInfoBox = (
  * Draws the "Explain" overlay for the full pipe view.
  */
 function drawExplanationOverlay(
-    ctx: CanvasRenderingContext2D,
+    context: CanvasRenderingContext2D,
     re: number,
     uiFlowState: keyof typeof flowDescriptions,
     physicsFlowState: keyof typeof flowDescriptions,
@@ -900,27 +954,30 @@ function drawExplanationOverlay(
     const progress = Math.min(elapsed / ANIMATION_DURATION, 1.0);
     const easeOutProgress = 1 - Math.pow(1 - progress, 3); // Ease-out cubic for smooth appearance
 
-    const width = ctx.canvas.clientWidth;
-    const height = ctx.canvas.clientHeight;
+    const width = context.canvas.clientWidth;
+    const height = context.canvas.clientHeight;
     const centerX = width / 2;
     const centerY = height / 2;
 
-    ctx.save();
-    ctx.globalAlpha = easeOutProgress;
-    ctx.strokeStyle = 'white';
-    ctx.lineWidth = 1.5;
+    context.save();
+    context.globalAlpha = easeOutProgress;
+    context.strokeStyle = 'white';
+    context.lineWidth = 1.5;
 
     if (uiFlowState === 'laminar' || uiFlowState === 'transition') {
-        const text1 = drawTextWithBackground(ctx, 'Smooth, parallel layers', 100, 40, 'center', 'explain-laminar-1');
-        drawArrow(ctx, text1.x + text1.width/2, text1.y + text1.height, 100, 85, progress);
+        const text1 = drawTextWithBackground(context, 'Smooth, parallel layers', 100, 40, 'center', 'explain-laminar-1');
+        const anchor1 = getArrowAnchorPoint(text1, 100, 85);
+        drawArrow(context, anchor1.x, anchor1.y, 100, 85, progress);
 
-        const text2 = drawTextWithBackground(ctx, 'Max Velocity at Center', centerX, centerY - 40, 'center', 'explain-laminar-2');
-        drawArrow(ctx, text2.x + text2.width/2, text2.y + text2.height, centerX, centerY, progress);
+        const text2 = drawTextWithBackground(context, 'Max Velocity at Center', centerX, centerY - 40, 'center', 'explain-laminar-2');
+        const anchor2 = getArrowAnchorPoint(text2, centerX, centerY);
+        drawArrow(context, anchor2.x, anchor2.y, centerX, centerY, progress);
 
-        const text3 = drawTextWithBackground(ctx, 'Velocity ≈ 0 at Wall', width - 100, WALL_BUFFER + 25, 'center', 'explain-laminar-3');
-        drawArrow(ctx, text3.x + text3.width/2, text3.y + text3.height, width - 100, WALL_BUFFER + 5, progress);
+        const text3 = drawTextWithBackground(context, 'Velocity ≈ 0 at Wall', width - 100, WALL_BUFFER + 25, 'center', 'explain-laminar-3');
+        const anchor3 = getArrowAnchorPoint(text3, width - 100, WALL_BUFFER + 5);
+        drawArrow(context, anchor3.x, anchor3.y, width - 100, WALL_BUFFER + 5, progress);
 
-        drawInfoBox(ctx, 'Laminar Flow Impact', [
+        drawInfoBox(context, 'Laminar Flow Impact', [
             '<b>Friction Driver:</b> Fluid Viscosity',
             '<b>Pressure Drop:</b> Minimal & Predictable',
             'Flow is stable and predictable, with',
@@ -934,26 +991,28 @@ function drawExplanationOverlay(
         const eddyY = centerY + 30;
         const eddyRadius = 20;
 
-        const text1 = drawTextWithBackground(ctx, 'Chaotic Eddies & Mixing', eddyX, eddyY - eddyRadius - 25, 'center', 'explain-turb-1');
-        drawArrow(ctx, text1.x + text1.width/2, text1.y + text1.height, eddyX, eddyY - eddyRadius, progress);
-        ctx.beginPath();
-        ctx.arc(eddyX, eddyY, eddyRadius * progress, 0, Math.PI * 2);
-        ctx.stroke();
+        const text1 = drawTextWithBackground(context, 'Chaotic Eddies & Mixing', eddyX, eddyY - eddyRadius - 25, 'center', 'explain-turb-1');
+        const anchor1 = getArrowAnchorPoint(text1, eddyX, eddyY - eddyRadius);
+        drawArrow(context, anchor1.x, anchor1.y, eddyX, eddyY - eddyRadius, progress);
+        context.beginPath();
+        context.arc(eddyX, eddyY, eddyRadius * progress, 0, Math.PI * 2);
+        context.stroke();
         
-        drawTextWithBackground(ctx, 'Flatter Velocity Profile', centerX, height - 40, 'center', 'explain-turb-2');
-        ctx.beginPath();
+        drawTextWithBackground(context, 'Flatter Velocity Profile', centerX, height - 40, 'center', 'explain-turb-2');
+        context.beginPath();
         const arrowStart = centerX - 70;
-        ctx.moveTo(arrowStart, height - 25);
-        ctx.lineTo(arrowStart + 140 * progress, height - 25);
-        ctx.stroke();
+        context.moveTo(arrowStart, height - 25);
+        context.lineTo(arrowStart + 140 * progress, height - 25);
+        context.stroke();
 
         const boundaryLayerThickness = mapLog(re, 2301, RE_MAX, 30, 5);
         const boundaryLayerYTop = WALL_BUFFER + boundaryLayerThickness;
 
         if (physicsFlowState === 'fully-turbulent') {
-            const text3 = drawTextWithBackground(ctx, 'Thin Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
-            drawArrow(ctx, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
-            drawInfoBox(ctx, 'Complete Turbulence Impact', [
+            const text3 = drawTextWithBackground(context, 'Thin Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
+            const anchor3 = getArrowAnchorPoint(text3, 100, boundaryLayerYTop - 5);
+            drawArrow(context, anchor3.x, anchor3.y, 100, boundaryLayerYTop - 5, progress);
+            drawInfoBox(context, 'Complete Turbulence Impact', [
                 '<b>Friction Driver:</b> Pipe Roughness',
                 '<b>Pressure Drop:</b> Maximum',
                 'The turbulent boundary layer is thin and the',
@@ -962,9 +1021,10 @@ function drawExplanationOverlay(
                 '∙ Note: Darcy f_D = 4 x Fanning f'
             ], easeOutProgress, 'explain-fullyturb-infobox');
         } else { // Partially turbulent
-            const text3 = drawTextWithBackground(ctx, 'Thicker Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
-            drawArrow(ctx, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
-            drawInfoBox(ctx, 'Partial Turbulence Impact', [
+            const text3 = drawTextWithBackground(context, 'Thicker Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
+            const anchor3 = getArrowAnchorPoint(text3, 100, boundaryLayerYTop - 5);
+            drawArrow(context, anchor3.x, anchor3.y, 100, boundaryLayerYTop - 5, progress);
+            drawInfoBox(context, 'Partial Turbulence Impact', [
                 '<b>Friction Driver:</b> Re & Roughness',
                 '<b>Pressure Drop:</b> High',
                 'A boundary layer shields the main flow, but',
@@ -975,17 +1035,17 @@ function drawExplanationOverlay(
             ], easeOutProgress, 'explain-partturb-infobox');
         }
     }
-    ctx.restore();
+    context.restore();
 }
 
 /**
  * Draws the specialized close-up view of the boundary layer.
  */
-function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRoughness: number) {
-    const width = ctx.canvas.clientWidth;
-    const height = ctx.canvas.clientHeight;
+function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, absRoughness: number) {
+    const width = context.canvas.clientWidth;
+    const height = context.canvas.clientHeight;
 
-    const wallBaseY = height * 0.8;
+    const wallBaseY = height * 0.9;
     const zoomFactor = 2000;
     const roughnessHeight = absRoughness * zoomFactor;
 
@@ -996,42 +1056,42 @@ function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
     const viscousSublayerTopY = wallBaseY - viscousSublayerThickness;
     
     // --- Draw Wall & Layers ---
-    ctx.fillStyle = '#4a5568'; // Wall material
-    ctx.beginPath();
-    ctx.moveTo(0, height);
-    ctx.lineTo(0, wallBaseY);
+    context.fillStyle = '#4a5568'; // Wall material
+    context.beginPath();
+    context.moveTo(0, height);
+    context.lineTo(0, wallBaseY);
     for (let x = 0; x < width; x++) {
-        ctx.lineTo(x, wallBaseY - roughnessProfile[x] * roughnessHeight);
+        context.lineTo(x, wallBaseY - roughnessProfile[x] * roughnessHeight);
     }
-    ctx.lineTo(width, wallBaseY);
-    ctx.lineTo(width, height);
-    ctx.closePath();
-    ctx.fill();
+    context.lineTo(width, wallBaseY);
+    context.lineTo(width, height);
+    context.closePath();
+    context.fill();
     
     // Draw turbulent boundary layer (reddish, more transparent)
-    const boundaryGradient = ctx.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
+    const boundaryGradient = context.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
     boundaryGradient.addColorStop(0, 'rgba(233, 69, 96, 0)');
     boundaryGradient.addColorStop(1, 'rgba(233, 69, 96, 0.4)');
-    ctx.fillStyle = boundaryGradient;
-    ctx.fillRect(0, boundaryLayerTopY, width, boundaryLayerThickness);
+    context.fillStyle = boundaryGradient;
+    context.fillRect(0, boundaryLayerTopY, width, boundaryLayerThickness);
 
     // Draw viscous sublayer (blueish, more opaque near wall)
-    const sublayerGradient = ctx.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
+    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
     sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0)');
     sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.65)');
-    ctx.fillStyle = sublayerGradient;
-    ctx.fillRect(0, viscousSublayerTopY, width, viscousSublayerThickness);
+    context.fillStyle = sublayerGradient;
+    context.fillRect(0, viscousSublayerTopY, width, viscousSublayerThickness);
     
     // --- Draw Annotations ---
-    ctx.save();
-    ctx.strokeStyle = 'white';
-    ctx.lineWidth = 1.5;
+    context.save();
+    context.strokeStyle = 'white';
+    context.lineWidth = 1.5;
 
     // The key comparison is if roughness pierces the viscous sublayer
     const isSmooth = viscousSublayerThickness > roughnessHeight;
 
     if (isSmooth) {
-        drawInfoBox(ctx, 'Hydraulically Smooth Flow', [
+        drawInfoBox(context, 'Hydraulically Smooth Flow', [
             'The <b>viscous sublayer</b> is thicker than the',
             'roughness elements. It acts as a smooth',
             'buffer, "hiding" the wall from the chaotic',
@@ -1039,123 +1099,252 @@ function drawBoundaryDetailView(ctx: CanvasRenderingContext2D, re: number, absRo
             '<b>Friction Driver:</b> Fluid Viscosity (Re)'
         ], 1.0, 'boundary-infobox');
 
-        const textRect = drawTextWithBackground(ctx, 'Roughness buried in sublayer', width / 2, wallBaseY - roughnessHeight - 20, 'center', 'boundary-text-1');
-        drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
+        const textRect = drawTextWithBackground(context, 'Roughness buried in sublayer', width / 2, wallBaseY - roughnessHeight - 20, 'center', 'boundary-text-1');
+        const anchor1 = getArrowAnchorPoint(textRect, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
+        drawArrow(context, anchor1.x, anchor1.y, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
     } else {
-        drawInfoBox(ctx, 'Rough Flow', [
+        drawInfoBox(context, 'Rough Flow', [
             'Roughness elements pierce the thin <b>viscous',
             'sublayer</b>, disrupting the <b>turbulent',
             'boundary layer</b> above.',
             'This creates eddies and form drag.',
             '<b>Friction Driver:</b> Pipe Roughness (ε)'
         ], 1.0, 'boundary-infobox');
-        const textRect = drawTextWithBackground(ctx, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - roughnessHeight - 40, 'center', 'boundary-text-1');
-        drawArrow(ctx, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - roughnessHeight + 5);
+        const textRect = drawTextWithBackground(context, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - roughnessHeight - 40, 'center', 'boundary-text-1');
+        const anchor1 = getArrowAnchorPoint(textRect, width / 2 + 5, wallBaseY - roughnessHeight + 5);
+        drawArrow(context, anchor1.x, anchor1.y, width / 2 + 5, wallBaseY - roughnessHeight + 5);
     }
     
     // Label Layers
     const boundaryLabelY = boundaryLayerTopY + (viscousSublayerTopY - boundaryLayerTopY) / 2;
-    const boundaryRect = drawTextWithBackground(ctx, 'Turbulent Layer', 120, boundaryLabelY, 'center', 'boundary-boundary-label');
-    drawArrow(ctx, boundaryRect.x, boundaryRect.y - boundaryRect.height / 2, boundaryRect.x, boundaryLayerTopY);
-    drawArrow(ctx, boundaryRect.x, boundaryRect.y + boundaryRect.height / 2, boundaryRect.x, viscousSublayerTopY);
+    const boundaryRect = drawTextWithBackground(context, 'Turbulent Layer', 120, boundaryLabelY, 'center', 'boundary-boundary-label');
+    const anchorB1 = getArrowAnchorPoint(boundaryRect, boundaryRect.x, boundaryLayerTopY);
+    drawArrow(context, anchorB1.x, anchorB1.y, boundaryRect.x, boundaryLayerTopY);
+    const anchorB2 = getArrowAnchorPoint(boundaryRect, boundaryRect.x, viscousSublayerTopY);
+    drawArrow(context, anchorB2.x, anchorB2.y, boundaryRect.x, viscousSublayerTopY);
+
 
     const sublayerLabelY = viscousSublayerTopY + viscousSublayerThickness / 2;
-    const sublayerRect = drawTextWithBackground(ctx, 'Viscous Sublayer', width - 120, sublayerLabelY, 'center', 'boundary-sublayer-label');
-    drawArrow(ctx, sublayerRect.x, sublayerRect.y - sublayerRect.height / 2, sublayerRect.x, viscousSublayerTopY);
-    drawArrow(ctx, sublayerRect.x, sublayerRect.y + sublayerRect.height / 2, sublayerRect.x, wallBaseY);
+    const sublayerRect = drawTextWithBackground(context, 'Viscous Sublayer', width - 120, sublayerLabelY, 'center', 'boundary-sublayer-label');
+    const anchorS1 = getArrowAnchorPoint(sublayerRect, sublayerRect.x, viscousSublayerTopY);
+    drawArrow(context, anchorS1.x, anchorS1.y, sublayerRect.x, viscousSublayerTopY);
+    const anchorS2 = getArrowAnchorPoint(sublayerRect, sublayerRect.x, wallBaseY);
+    drawArrow(context, anchorS2.x, anchorS2.y, sublayerRect.x, wallBaseY);
 
-    ctx.restore();
+    context.restore();
 }
 
 /**
  * Draws the extreme close-up view of the pipe wall.
  */
-function drawPipeWallDetailView(ctx: CanvasRenderingContext2D, re: number, absRoughness: number) {
-    const width = ctx.canvas.clientWidth;
-    const height = ctx.canvas.clientHeight;
+function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, absRoughness: number) {
+    const width = context.canvas.clientWidth;
+    const height = context.canvas.clientHeight;
 
-    const zoomFactor = 10000; // Extreme zoom on roughness
-    const roughnessHeight = absRoughness * zoomFactor;
-    const wallBaseY = height * 0.75; // Wall takes up most of the view
+    const wallBaseY = height * 0.85; // Wall takes up most of the view
 
     const boundaryLayerThickness = mapLog(re, 2301, RE_MAX, 250, 80); // Scaled for extreme zoom
+
+    // New scaling: 0.008 roughness = 50% of boundary layer height. Scales linearly from that anchor.
+    const anchorRoughness = 0.008; // inches
+    const anchorScaleFactor = 0.5; // 50%
+    const roughnessHeight = (absRoughness / anchorRoughness) * (boundaryLayerThickness * anchorScaleFactor);
+
     const viscousSublayerThickness = mapLog(re, 2301, RE_MAX, 80, 10);
     const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
     const viscousSublayerTopY = wallBaseY - viscousSublayerThickness;
 
-    // --- Draw Wall & Layers ---
-    ctx.fillStyle = '#3b4453'; // Slightly lighter wall color for detail
-    ctx.fillRect(0, wallBaseY, width, height - wallBaseY);
-    ctx.fillStyle = '#4a5568';
-    ctx.beginPath();
-    ctx.moveTo(0, height);
-    ctx.lineTo(0, wallBaseY);
-    for (let x = 0; x < width; x++) {
-        ctx.lineTo(x, wallBaseY - roughnessProfile[x] * roughnessHeight);
+    // Normalize the roughness profile so its values span from 0 to 1 exactly.
+    // This ensures the deepest valley always touches the wallBaseY line, preventing a visual bug.
+    let minProfile = 1.0;
+    let maxProfile = 0.0;
+    if (roughnessProfile.length > 0) {
+        for (const val of roughnessProfile) {
+            if (val < minProfile) minProfile = val;
+            if (val > maxProfile) maxProfile = val;
+        }
     }
-    ctx.lineTo(width, wallBaseY);
-    ctx.lineTo(width, height);
-    ctx.closePath();
-    ctx.fill();
+    const profileRange = (maxProfile - minProfile) > 0 ? (maxProfile - minProfile) : 1;
 
-    // Draw turbulent boundary layer (very transparent, just a hint)
-    const boundaryGradient = ctx.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
+
+    // --- Draw Wall & Layers ---
+    context.beginPath();
+    context.moveTo(0, height); // Start at the bottom-left of the canvas.
+    for (let x = 0; x < width; x++) {
+        const normalizedProfileValue = (roughnessProfile[x] - minProfile) / profileRange;
+        const roughnessY = wallBaseY - normalizedProfileValue * roughnessHeight;
+        context.lineTo(x, roughnessY);
+    }
+    context.lineTo(width, height); // Draw a line down to the bottom-right of the canvas.
+    context.closePath(); // Close the path to create a flat bottom edge.
+
+    context.fillStyle = '#4a5568';
+    context.fill();
+    
+    // Draw turbulent boundary layer, making it more opaque for visibility
+    const boundaryGradient = context.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
     boundaryGradient.addColorStop(0, 'rgba(233, 69, 96, 0)');
-    boundaryGradient.addColorStop(1, 'rgba(233, 69, 96, 0.35)');
-    ctx.fillStyle = boundaryGradient;
-    ctx.fillRect(0, boundaryLayerTopY, width, boundaryLayerThickness);
+    boundaryGradient.addColorStop(1, 'rgba(233, 69, 96, 0.8)');
+    context.fillStyle = boundaryGradient;
+    context.fillRect(0, boundaryLayerTopY, width, boundaryLayerThickness);
 
-    // Draw viscous sublayer
-    const sublayerGradient = ctx.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
-    sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0)');
-    sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.65)');
-    ctx.fillStyle = sublayerGradient;
-    ctx.fillRect(0, viscousSublayerTopY, width, viscousSublayerThickness);
+    // Draw viscous sublayer, making it darker and more distinct
+    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
+    sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0.2)');
+    sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.95)');
+    context.fillStyle = sublayerGradient;
+    context.fillRect(0, viscousSublayerTopY, width, viscousSublayerThickness);
+
+    // Add glowing outline to wall profile ON TOP of layers to make it visible
+    context.save();
+    context.beginPath();
+    const firstNormalizedValue = (roughnessProfile[0] - minProfile) / profileRange;
+    context.moveTo(0, wallBaseY - firstNormalizedValue * roughnessHeight);
+    for (let x = 1; x < width; x++) {
+        const normalizedProfileValue = (roughnessProfile[x] - minProfile) / profileRange;
+        context.lineTo(x, wallBaseY - normalizedProfileValue * roughnessHeight);
+    }
+    context.strokeStyle = 'rgba(200, 220, 255, 0.5)';
+    context.lineWidth = 3;
+    context.filter = 'blur(3px)';
+    context.stroke();
+    context.lineWidth = 1;
+    context.filter = 'none';
+    context.strokeStyle = 'rgba(200, 220, 255, 0.4)';
+    context.stroke();
+    context.restore();
+
+
+    // --- Add a distinct glowing line to separate layers ---
+    context.save();
+    context.beginPath();
+    context.moveTo(0, viscousSublayerTopY);
+    context.lineTo(width, viscousSublayerTopY);
+    context.strokeStyle = 'rgba(200, 220, 255, 0.7)'; // A light, glowing blue-white line
+    context.lineWidth = 2;
+    context.filter = 'blur(2px)';
+    context.stroke();
+    context.filter = 'none';
+    context.lineWidth = 1;
+    context.stroke();
+    context.restore();
+
+    // --- Draw Friction Driver Label ---
+    const relativeRoughness = currentPipeDiameterIN > 0 ? absRoughness / currentPipeDiameterIN : 0;
+    const contribution = calculateFrictionContribution(re, relativeRoughness);
+    let frictionDriverText = '';
+    // Use the same thresholds as the contribution bar logic would imply.
+    if (contribution.roughness < 5) {
+        frictionDriverText = 'Friction Driver: Viscosity (Re)';
+    } else if (contribution.viscosity < 5) {
+        frictionDriverText = 'Friction Driver: Roughness (ε)';
+    } else {
+        frictionDriverText = 'Friction Driver: Re + Roughness';
+    }
+
+    context.save();
+    const padding = 12;
+    const margin = 15;
+    context.font = 'bold 13px "Roboto", sans-serif';
+    context.textAlign = 'right';
+    context.textBaseline = 'middle';
+    const textMetrics = context.measureText(frictionDriverText);
+    const rectHeight = 14 + padding;
+    const rectWidth = textMetrics.width + padding * 2;
+    const rectX = width - margin - rectWidth;
+    const rectY = margin;
+    const textX = width - margin - padding;
+    const textY = rectY + rectHeight / 2;
+
+    context.fillStyle = 'rgba(22, 33, 62, 0.9)';
+    context.strokeStyle = '#e0e0e0';
+    context.lineWidth = 1;
+    context.beginPath();
+    context.roundRect(rectX, rectY, rectWidth, rectHeight, 6);
+    context.fill();
+    context.stroke();
+    context.fillStyle = 'white';
+    context.fillText(frictionDriverText, textX, textY);
+    context.restore();
 
     // --- Draw Annotations ---
-    ctx.save();
-    ctx.strokeStyle = 'white';
-    ctx.lineWidth = 1.5;
+    context.save();
+    context.strokeStyle = 'white';
+    context.lineWidth = 1.5;
 
-    const isSmooth = viscousSublayerThickness > roughnessHeight;
-    const roughnessPeakX = width / 2;
-    const roughnessPeakY = wallBaseY - roughnessProfile[Math.floor(roughnessPeakX)] * roughnessHeight;
+    // Find the highest peak on screen to correctly place the annotation arrow.
+    let maxRoughnessValue = 0;
+    let highestPeakX = width / 2; // Default to center
+    for (let x = 0; x < width; x++) {
+        if (roughnessProfile[x] > maxRoughnessValue) {
+            maxRoughnessValue = roughnessProfile[x];
+            highestPeakX = x;
+        }
+    }
+    const normalizedHighestPeak = (maxRoughnessValue - minProfile) / profileRange;
+    const highestPeakAbsoluteHeight = normalizedHighestPeak * roughnessHeight;
+    const roughnessPeakY = wallBaseY - highestPeakAbsoluteHeight;
+
+
+    // The flow is "hydraulically smooth" if the viscous sublayer is thick enough to cover the highest roughness peaks.
+    const isSmooth = viscousSublayerThickness > highestPeakAbsoluteHeight;
+
+    const viscosityPercent = contribution.viscosity.toFixed(0);
+    const roughnessPercent = contribution.roughness.toFixed(0);
+    const contributionLine = `Friction: <b>${viscosityPercent}%</b> Viscosity, <b>${roughnessPercent}%</b> Roughness`;
+    
+    // --- Define Annotation Default Positions (based on user photo) ---
+    const infoBoxCoords = { x: width * 0.25, y: 70 };
+    const peakLabelCoords = { x: width - 200, y: roughnessPeakY - 40 };
+    const sublayerLabelCoords = { x: 40, y: 220 };
+    
+    const turbulentLabelRect = drawTextWithBackground(context, 'Turbulent Layer', 40, 70, 'left', 'wall-boundary-label');
+    const targetTurbulentX = turbulentLabelRect.x + turbulentLabelRect.width / 2;
+    const anchorTurbulent = getArrowAnchorPoint(turbulentLabelRect, targetTurbulentX, boundaryLayerTopY);
+    drawArrow(context, anchorTurbulent.x, anchorTurbulent.y, targetTurbulentX, boundaryLayerTopY);
 
     if (isSmooth) {
-        drawInfoBox(ctx, 'Wall View: Hydraulically Smooth', [
+        drawInfoBox(context, 'Wall View: Hydraulically Smooth', [
             'The <b>viscous sublayer</b> is thick enough to',
             'completely submerge the wall roughness (ε).',
             'It acts as a slick cushion, preventing the',
             'chaotic <b>turbulent layer</b> from interacting',
             'with the wall.',
-            '∙ Friction is driven by fluid viscosity.'
-        ], 1.0, 'wall-infobox');
+            ' ',
+            contributionLine,
+        ], 1.0, 'wall-infobox', infoBoxCoords);
         
-        const peakRect = drawTextWithBackground(ctx, 'Submerged Peak (ε)', roughnessPeakX, roughnessPeakY - 20, 'center', 'wall-peak-label');
-        drawArrow(ctx, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, roughnessPeakX, roughnessPeakY);
+        const peakRect = drawTextWithBackground(context, 'Submerged Peak (ε)', peakLabelCoords.x, peakLabelCoords.y, 'center', 'wall-peak-label');
+        const anchorPeak = getArrowAnchorPoint(peakRect, highestPeakX, roughnessPeakY);
+        drawArrow(context, anchorPeak.x, anchorPeak.y, highestPeakX, roughnessPeakY);
         
-        const sublayerRect = drawTextWithBackground(ctx, 'Thick viscous sublayer', 180, viscousSublayerTopY - 20, 'center', 'wall-sublayer-label');
-        drawArrow(ctx, sublayerRect.x + sublayerRect.width / 2, sublayerRect.y + sublayerRect.height, 180, viscousSublayerTopY);
+        const sublayerRect = drawTextWithBackground(context, 'Thick viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
+        const targetSublayerX = sublayerRect.x + sublayerRect.width / 2;
+        const anchorSublayer = getArrowAnchorPoint(sublayerRect, targetSublayerX, viscousSublayerTopY);
+        drawArrow(context, anchorSublayer.x, anchorSublayer.y, targetSublayerX, viscousSublayerTopY);
+
     } else {
-        drawInfoBox(ctx, 'Wall View: Rough Flow', [
+        drawInfoBox(context, 'Wall View: Rough Flow', [
             'The <b>viscous sublayer</b> is very thin, failing',
             'to cover the roughness peaks (ε).',
             'The peaks protrude, creating form drag and',
             'disrupting the entire <b>turbulent layer</b>,',
             'which causes significant energy loss.',
-            '∙ Friction is dominated by physical obstructions.'
-        ], 1.0, 'wall-infobox');
+            ' ',
+            contributionLine,
+        ], 1.0, 'wall-infobox', infoBoxCoords);
         
-        const peakRect = drawTextWithBackground(ctx, 'Exposed Peak creates drag', roughnessPeakX, roughnessPeakY - 20, 'center', 'wall-peak-label');
-        drawArrow(ctx, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, roughnessPeakX, roughnessPeakY);
+        const peakRect = drawTextWithBackground(context, 'Exposed Peak creates drag', peakLabelCoords.x, peakLabelCoords.y, 'center', 'wall-peak-label');
+        const anchorPeak = getArrowAnchorPoint(peakRect, highestPeakX, roughnessPeakY);
+        drawArrow(context, anchorPeak.x, anchorPeak.y, highestPeakX, roughnessPeakY);
 
-        const sublayerRect = drawTextWithBackground(ctx, 'Thin viscous sublayer', 150, viscousSublayerTopY - 20, 'center', 'wall-sublayer-label');
-        drawArrow(ctx, sublayerRect.x + sublayerRect.width / 2, sublayerRect.y + sublayerRect.height, 150, viscousSublayerTopY);
+        const sublayerRect = drawTextWithBackground(context, 'Thin viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
+        const targetSublayerX = sublayerRect.x + sublayerRect.width / 2;
+        const anchorSublayer = getArrowAnchorPoint(sublayerRect, targetSublayerX, viscousSublayerTopY);
+        drawArrow(context, anchorSublayer.x, anchorSublayer.y, targetSublayerX, viscousSublayerTopY);
     }
-    const turbulentLabelRect = drawTextWithBackground(ctx, 'Turbulent Layer', 100, boundaryLayerTopY - 20, 'left', 'wall-boundary-label');
-    drawArrow(ctx, turbulentLabelRect.x + turbulentLabelRect.width / 2, turbulentLabelRect.y + turbulentLabelRect.height, turbulentLabelRect.x + turbulentLabelRect.width / 2, boundaryLayerTopY);
     
-    ctx.restore();
+    context.restore();
 }
 
 
@@ -1195,6 +1384,11 @@ function updateIndicatorsAndDashboard(re: number, absRoughness: number, diameter
 
     indicatorContainer.innerHTML = '';
     frictionFactorMetrics.innerHTML = '';
+    const dynamicLabelsContainer = document.getElementById('dynamic-y-labels');
+    if (dynamicLabelsContainer) {
+        dynamicLabelsContainer.innerHTML = '';
+    }
+    const yLabelsData: { value: number; color: string; y: number }[] = [];
 
     results.forEach(res => {
         if (isNaN(res.value)) return;
@@ -1220,8 +1414,37 @@ function updateIndicatorsAndDashboard(re: number, absRoughness: number, diameter
             indicator.style.backgroundColor = res.color;
             indicator.style.boxShadow = `0 0 10px ${res.color}, 0 0 20px ${res.color}`;
             indicatorContainer.appendChild(indicator);
+
+            // Collect data for Y-axis label
+            yLabelsData.push({ value: res.value, color: res.color, y: mapFToY(res.value) });
         }
     });
+    
+    // Render dynamic Y-axis labels to prevent overlap
+    if (dynamicLabelsContainer && yLabelsData.length > 0) {
+        yLabelsData.sort((a, b) => a.y - b.y); // Sort by y-position on screen
+
+        let lastY = -Infinity;
+        const minSpacing = 12; // Minimum vertical pixels between labels
+
+        yLabelsData.forEach(labelInfo => {
+            let y = labelInfo.y;
+            if (y < lastY + minSpacing) {
+                y = lastY + minSpacing;
+            }
+
+            const textEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            textEl.setAttribute('x', '55');
+            textEl.setAttribute('y', String(y));
+            textEl.setAttribute('dy', '0.3em'); // For better vertical alignment
+            textEl.setAttribute('fill', labelInfo.color);
+            textEl.setAttribute('font-weight', 'bold');
+            textEl.textContent = labelInfo.value.toFixed(4);
+            dynamicLabelsContainer.appendChild(textEl);
+
+            lastY = y;
+        });
+    }
 
     // Update Friction Contribution Meter
     const contribution = calculateFrictionContribution(re, relativeRoughness);
@@ -1250,7 +1473,6 @@ function animateFullPipeView(time: number) {
      const physicsProps = getFlowProperties(currentRe, trueRelativeRoughness);
      currentF = physicsProps.friction;
 
-     ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
      drawPipe3D();
      drawBoundaryLayer(ctx, currentRe, time);
 
@@ -1269,8 +1491,6 @@ function animateFullPipeView(time: number) {
 
 function animateDetailView(time: number) {
     currentFrameHitboxes = [];
-    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-
     const zoomFactor = 2000;
     const roughnessHeight = absoluteRoughnessIN * zoomFactor;
     const viscousSublayerThickness = mapLog(currentRe, 2301, RE_MAX, 40, 5);
@@ -1290,13 +1510,16 @@ function animateDetailView(time: number) {
 
 function animatePipeWallDetailView(time: number) {
     currentFrameHitboxes = [];
-    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-
-    const zoomFactor = 10000;
-    const roughnessHeight = absoluteRoughnessIN * zoomFactor;
-    const viscousSublayerThickness = mapLog(currentRe, 2301, RE_MAX, 80, 10);
     
     drawPipeWallDetailView(ctx, currentRe, absoluteRoughnessIN);
+
+    // Ensure physics scaling matches visual scaling for consistent collisions.
+    const boundaryLayerThickness = mapLog(currentRe, 2301, RE_MAX, 250, 80);
+    const anchorRoughness = 0.008; // inches
+    const anchorScaleFactor = 0.5; // 50%
+    const roughnessHeight = (absoluteRoughnessIN / anchorRoughness) * (boundaryLayerThickness * anchorScaleFactor);
+    
+    const viscousSublayerThickness = mapLog(currentRe, 2301, RE_MAX, 80, 10);
 
     particles.forEach(p => {
         updateParticleInWallDetailView(p, currentRe, roughnessHeight, viscousSublayerThickness);
@@ -1309,10 +1532,57 @@ function animatePipeWallDetailView(time: number) {
     ctx.globalAlpha = 1.0;
 }
 
+function renderView(view: ViewMode, time: number) {
+    switch (view) {
+        case 'wall':
+            animatePipeWallDetailView(time);
+            break;
+        case 'boundary':
+            animateDetailView(time);
+            break;
+        case 'full':
+        default:
+            animateFullPipeView(time);
+            break;
+    }
+}
+
 
 function animate() {
     const time = performance.now();
+    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
 
+    // --- Handle State Transitions ---
+    if (isTransitioning) {
+        const elapsed = time - transitionStartTime!;
+        transitionProgress = Math.min(elapsed / TRANSITION_DURATION, 1.0);
+        
+        // Use an easing function for a smoother feel
+        const easeProgress = 1 - Math.pow(1 - transitionProgress, 3); // Ease-out cubic
+
+        // Draw the outgoing view, fading out
+        ctx.globalAlpha = 1.0 - easeProgress;
+        renderView(transitionSourceView!, time);
+
+        // Draw the incoming view, fading in
+        ctx.globalAlpha = easeProgress;
+        renderView(transitionTargetView!, time);
+        
+        ctx.globalAlpha = 1.0; // Reset alpha
+
+        if (transitionProgress >= 1.0) {
+            isTransitioning = false;
+            currentViewMode = transitionTargetView!;
+            transitionSourceView = null;
+            transitionTargetView = null;
+            initParticles(); // Create new particles for the new view
+            updateViewModeUI(); // Re-sync UI state after transition to fix button states
+        }
+    } else {
+        renderView(currentViewMode, time);
+    }
+    
+    // --- Update Shared State & Dashboard ---
     currentRe += (targetRe - currentRe) * LERP_FACTOR;
     const trueRelativeRoughness = absoluteRoughnessIN / currentPipeDiameterIN;
 
@@ -1332,20 +1602,8 @@ function animate() {
     
     updateIndicatorsAndDashboard(currentRe, absoluteRoughnessIN, currentPipeDiameterIN, 
                                  snappedRelativeRoughness, activeCurveId, uiProps.friction);
-    
-    switch(currentViewMode) {
-        case 'wall':
-            animatePipeWallDetailView(time);
-            break;
-        case 'boundary':
-            animateDetailView(time);
-            break;
-        case 'full':
-        default:
-            animateFullPipeView(time);
-            break;
-    }
 
+    // --- Update Velocity Profile ---
     let targetProfile = calculateProfile(currentRe, currentF, velocityCanvas.clientHeight);
     if (currentProfile.length !== targetProfile.length) {
         currentProfile = [...targetProfile];
@@ -1366,35 +1624,20 @@ function handleAppResize() {
     setupCanvas(velocityCanvas);
     initParticles();
     currentProfile = calculateProfile(currentRe, currentF, velocityCanvas.clientHeight);
-    
-    // Ensure floating moody diagram stays within bounds
-    if (moodyDiagramContainer.classList.contains('is-floating')) {
-        const appRect = appContainer.getBoundingClientRect();
-        const moodyRect = moodyDiagramContainer.getBoundingClientRect();
-
-        let currentLeft = parseFloat(moodyDiagramContainer.style.left || '0');
-        let currentTop = parseFloat(moodyDiagramContainer.style.top || '0');
-        
-        if (currentLeft + moodyRect.width > appRect.width) {
-            moodyDiagramContainer.style.left = `${appRect.width - moodyRect.width}px`;
-        }
-        if (currentTop + moodyRect.height > appRect.height) {
-            moodyDiagramContainer.style.top = `${appRect.height - moodyRect.height}px`;
-        }
-        if (currentLeft < 0) {
-            moodyDiagramContainer.style.left = `0px`;
-        }
-        if (currentTop < 0) {
-             moodyDiagramContainer.style.top = `0px`;
-        }
-    }
-    
     animate();
 }
 
 function updateViewModeUI() {
     // Manage visibility of the Pipe Wall Detail button
-    pipeWallDetailBtn.classList.toggle('hidden', currentViewMode === 'full');
+    const canShowWallDetail = currentViewMode === 'boundary' || currentViewMode === 'wall' || (isTransitioning && (transitionTargetView === 'boundary' || transitionTargetView === 'wall'));
+    pipeWallDetailBtn.classList.toggle('hidden', !canShowWallDetail);
+    
+    // Update the button text based on the current state if it's visible
+    if(canShowWallDetail) {
+        const effectiveView = isTransitioning ? transitionTargetView : currentViewMode;
+        pipeWallDetailBtn.textContent = effectiveView === 'wall' ? 'Boundary Layer Detail' : 'Pipe Wall Detail';
+    }
+
 
     // Manage active states of all buttons
     const activePreset = (Object.keys(presetReValues) as FlowPreset[]).find(p => presetReValues[p] === targetRe);
@@ -1402,11 +1645,15 @@ function updateViewModeUI() {
     laminarBtn.classList.toggle('active', currentViewMode === 'full' && activePreset === 'laminar');
     partiallyTurbulentBtn.classList.toggle('active', currentViewMode === 'full' && activePreset === 'partially-turbulent');
     fullyTurbulentBtn.classList.toggle('active', currentViewMode === 'full' && activePreset === 'fully-turbulent');
-    boundaryDetailBtn.classList.toggle('active', currentViewMode === 'boundary');
-    pipeWallDetailBtn.classList.toggle('active', currentViewMode === 'wall');
+    boundaryDetailBtn.classList.toggle('active', currentViewMode === 'boundary' || currentViewMode === 'wall');
+    
+    // Pipe wall detail doesn't have its own primary active state, it modifies the boundary button
+    // But we can set its aria-pressed state for accessibility
+    pipeWallDetailBtn.setAttribute('aria-pressed', (currentViewMode === 'wall').toString());
+
 
     // Set aria-pressed for all buttons
-    [laminarBtn, partiallyTurbulentBtn, fullyTurbulentBtn, boundaryDetailBtn, pipeWallDetailBtn].forEach(btn => {
+    [laminarBtn, partiallyTurbulentBtn, fullyTurbulentBtn, boundaryDetailBtn].forEach(btn => {
         btn.setAttribute('aria-pressed', btn.classList.contains('active').toString());
     });
 
@@ -1420,6 +1667,18 @@ function updateViewModeUI() {
     }
 }
 
+function startViewTransition(targetView: ViewMode) {
+    if (isTransitioning || currentViewMode === targetView) return;
+
+    transitionSourceView = currentViewMode;
+    transitionTargetView = targetView;
+    isTransitioning = true;
+    transitionStartTime = performance.now();
+    annotationOffsets.clear(); // Clear annotations on transition
+
+    // We DON'T change currentViewMode or initParticles yet.
+    // That happens when the transition completes.
+}
 
 function setPreset(flowType: FlowPreset) {
     targetRe = presetReValues[flowType];
@@ -1427,8 +1686,7 @@ function setPreset(flowType: FlowPreset) {
     reynoldsInput.value = Math.round(targetRe).toString();
     
     if (currentViewMode !== 'full') {
-        currentViewMode = 'full';
-        initParticles();
+        startViewTransition('full');
     }
     updateViewModeUI();
 }
@@ -1562,12 +1820,6 @@ function initInfoTabs() {
             const isMatch = panel === panelToActivate;
             panel.classList.toggle('hidden', !isMatch);
         });
-
-        // If the moody diagram is floating, only show it when its tab is active.
-        if (moodyDiagramContainer.classList.contains('is-floating')) {
-            const isDiagramTabActive = tabToActivate === diagramTabBtn;
-            moodyDiagramContainer.classList.toggle('hidden', !isDiagramTabActive);
-        }
     };
 
     tabs.forEach(tab => {
@@ -1576,45 +1828,45 @@ function initInfoTabs() {
 }
 
 function initDragHandler() {
-    const onCanvasMouseDown = (e: MouseEvent) => {
-        // Allow dragging in detail views, OR in full view ONLY if explain is on.
-        if (currentViewMode === 'full' && !showExplanation) {
-            return;
-        }
-        
+    const getCanvasCoords = (clientX: number, clientY: number) => {
         const rect = canvas.getBoundingClientRect();
         const scaleX = canvas.clientWidth / rect.width;
         const scaleY = canvas.clientHeight / rect.height;
-        const mouseX = (e.clientX - rect.left) * scaleX;
-        const mouseY = (e.clientY - rect.top) * scaleY;
+        const canvasX = (clientX - rect.left) * scaleX;
+        const canvasY = (clientY - rect.top) * scaleY;
+        return { x: canvasX, y: canvasY };
+    };
+
+    const handleDragStart = (clientX: number, clientY: number): boolean => {
+        // Allow dragging in detail views, OR in full view ONLY if explain is on.
+        if (currentViewMode === 'full' && !showExplanation) {
+            return false;
+        }
+
+        const { x: mouseX, y: mouseY } = getCanvasCoords(clientX, clientY);
 
         // Check for hit on draggable items, iterating backwards for Z-index
         for (let i = currentFrameHitboxes.length - 1; i >= 0; i--) {
             const item = currentFrameHitboxes[i];
             const isHit = mouseX >= item.rect.x && mouseX <= item.rect.x + item.rect.width &&
                           mouseY >= item.rect.y && mouseY <= item.rect.y + item.rect.height;
-            
+
             if (isHit) {
                 isDragging = true;
                 draggedAnnotationId = item.id;
                 dragStartPos = { x: mouseX, y: mouseY };
                 dragStartOffset = annotationOffsets.get(item.id) || { x: 0, y: 0 };
                 canvas.style.cursor = 'grabbing';
-                e.preventDefault();
-                return;
+                return true;
             }
         }
+        return false;
     };
 
-    const onDocumentMouseMove = (e: MouseEvent) => {
+    const handleDragMove = (clientX: number, clientY: number) => {
         if (!isDragging || !draggedAnnotationId) return;
 
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.clientWidth / rect.width;
-        const scaleY = canvas.clientHeight / rect.height;
-        const mouseX = (e.clientX - rect.left) * scaleX;
-        const mouseY = (e.clientY - rect.top) * scaleY;
-
+        const { x: mouseX, y: mouseY } = getCanvasCoords(clientX, clientY);
         const deltaX = mouseX - dragStartPos.x;
         const deltaY = mouseY - dragStartPos.y;
 
@@ -1625,24 +1877,20 @@ function initDragHandler() {
         annotationOffsets.set(draggedAnnotationId, newOffset);
     };
 
-    const onDocumentMouseUp = () => {
+    const handleDragEnd = () => {
+        if (!isDragging) return;
         isDragging = false;
         draggedAnnotationId = null;
         canvas.style.cursor = 'default';
     };
 
-    const onCanvasMouseMove = (e: MouseEvent) => {
-        // Same logic as onCanvasMouseDown for showing the grab cursor
+    const handleHover = (clientX: number, clientY: number) => {
         if (isDragging || (currentViewMode === 'full' && !showExplanation)) {
              canvas.style.cursor = 'default';
              return;
         }
 
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.clientWidth / rect.width;
-        const scaleY = canvas.clientHeight / rect.height;
-        const mouseX = (e.clientX - rect.left) * scaleX;
-        const mouseY = (e.clientY - rect.top) * scaleY;
+        const { x: mouseX, y: mouseY } = getCanvasCoords(clientX, clientY);
 
         let hovering = false;
         for (const item of currentFrameHitboxes) {
@@ -1655,78 +1903,98 @@ function initDragHandler() {
         canvas.style.cursor = hovering ? 'grab' : 'default';
     };
 
-    canvas.addEventListener('mousedown', onCanvasMouseDown);
-    document.addEventListener('mousemove', onDocumentMouseMove);
-    document.addEventListener('mouseup', onDocumentMouseUp);
-    canvas.addEventListener('mousemove', onCanvasMouseMove);
+    // --- Mouse Events ---
+    canvas.addEventListener('mousedown', (e: MouseEvent) => {
+        if (handleDragStart(e.clientX, e.clientY)) {
+            e.preventDefault();
+        }
+    });
+
+    document.addEventListener('mousemove', (e: MouseEvent) => {
+        if (isDragging) {
+            handleDragMove(e.clientX, e.clientY);
+        }
+    });
+
+    document.addEventListener('mouseup', handleDragEnd);
+
+    canvas.addEventListener('mousemove', (e: MouseEvent) => {
+        handleHover(e.clientX, e.clientY);
+    });
+
+    // --- Touch Events ---
+    canvas.addEventListener('touchstart', (e: TouchEvent) => {
+        if (e.touches.length === 1) {
+            const touch = e.touches[0];
+            if (handleDragStart(touch.clientX, touch.clientY)) {
+                // Prevent default to stop scrolling/zooming gestures.
+                e.preventDefault();
+            }
+        }
+    }, { passive: false });
+
+    document.addEventListener('touchmove', (e: TouchEvent) => {
+        if (isDragging && e.touches.length === 1) {
+            const touch = e.touches[0];
+            handleDragMove(touch.clientX, touch.clientY);
+            // Prevent scrolling while dragging.
+            e.preventDefault();
+        }
+    }, { passive: false });
+
+    document.addEventListener('touchend', handleDragEnd);
+    document.addEventListener('touchcancel', handleDragEnd);
 }
 
-function initMoodyDiagramDrag() {
-    let isDragging = false;
-    let isFloating = false;
-    let initialX = 0, initialY = 0;
-    let offsetX = 0, offsetY = 0;
+function updateFullScreenButtonState() {
+    const doc = document as any;
+    const isFullScreen = !!(doc.fullscreenElement || doc.mozFullScreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement);
+    if (fullScreenBtn) {
+        fullScreenBtn.classList.toggle('active', isFullScreen);
+        fullScreenBtn.setAttribute('aria-pressed', String(isFullScreen));
+        fullScreenBtn.textContent = isFullScreen ? 'Exit Full Screen' : 'Full Screen';
+    }
+}
 
-    const onMouseDown = (e: MouseEvent) => {
-        e.preventDefault();
-        isDragging = true;
-        
-        const appRect = appContainer.getBoundingClientRect();
+function toggleFullScreen() {
+    // Prevent rapid-fire calls which cause the "Pending operation" error.
+    if (isFullScreenRequestPending) {
+        return;
+    }
 
-        if (!isFloating) {
-            isFloating = true;
-            const moodyRect = moodyDiagramContainer.getBoundingClientRect();
-            
-            // Set fixed size and position before making it absolute
-            moodyDiagramContainer.style.width = `${moodyRect.width}px`;
-            moodyDiagramContainer.style.height = `${moodyRect.height}px`;
-            
-            const initialLeft = moodyRect.left - appRect.left;
-            const initialTop = moodyRect.top - appRect.top;
-            
-            moodyDiagramContainer.style.left = `${initialLeft}px`;
-            moodyDiagramContainer.style.top = `${initialTop}px`;
-            
-            moodyDiagramContainer.classList.add('is-floating');
+    const doc = document as any;
+    const docEl = document.documentElement as any;
+
+    const requestFullScreen = docEl.requestFullscreen || docEl.mozRequestFullScreen || docEl.webkitRequestFullScreen || docEl.msRequestFullscreen;
+    const exitFullScreen = doc.exitFullscreen || doc.mozCancelFullScreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
+
+    const isFullScreen = !!(doc.fullscreenElement || doc.mozFullScreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement);
+
+    if (!isFullScreen) {
+        if (requestFullScreen) {
+            isFullScreenRequestPending = true;
+            requestFullScreen.call(docEl).catch((err: Error) => {
+                // Don't show an alert for cancellation errors caused by the user.
+                const isCancellationError = err.name === 'AbortError' || 
+                                          (err instanceof TypeError && err.message.includes('cancelled'));
+
+                if (!isCancellationError) {
+                    console.error(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+                    alert(`Full screen was blocked by the browser. Please try again after interacting with the page.`);
+                }
+            }).finally(() => {
+                // Reset the flag after a short delay to allow events to process.
+                setTimeout(() => { isFullScreenRequestPending = false; }, 100);
+            });
         }
-        
-        initialX = e.clientX;
-        initialY = e.clientY;
-        
-        offsetX = e.clientX - moodyDiagramContainer.offsetLeft;
-        offsetY = e.clientY - moodyDiagramContainer.offsetTop;
-
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-        if (!isDragging) return;
-
-        const appRect = appContainer.getBoundingClientRect();
-        const moodyRect = moodyDiagramContainer.getBoundingClientRect();
-
-        let newLeft = e.clientX - offsetX;
-        let newTop = e.clientY - offsetY;
-        
-        // Constrain within the app container
-        const maxLeft = appRect.width - moodyRect.width;
-        const maxTop = appRect.height - moodyRect.height;
-        
-        newLeft = Math.max(0, Math.min(newLeft, maxLeft));
-        newTop = Math.max(0, Math.min(newTop, maxTop));
-        
-        moodyDiagramContainer.style.left = `${newLeft}px`;
-        moodyDiagramContainer.style.top = `${newTop}px`;
-    };
-
-    const onMouseUp = () => {
-        isDragging = false;
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    moodyTitle.addEventListener('mousedown', onMouseDown);
+    } else {
+        if (exitFullScreen) {
+            isFullScreenRequestPending = true;
+            exitFullScreen.call(doc);
+            // The 'fullscreenchange' event will fire, and our flag will prevent re-entry.
+            setTimeout(() => { isFullScreenRequestPending = false; }, 100);
+        }
+    }
 }
 
 
@@ -1806,7 +2074,7 @@ fullyTurbulentBtn.addEventListener('click', () => setPreset('fully-turbulent'));
 
 boundaryDetailBtn.addEventListener('click', () => {
     if (currentViewMode === 'full') {
-        currentViewMode = 'boundary';
+        startViewTransition('boundary');
         // Bump Re if it's too low for a meaningful detail view
         if (targetRe < 2301) {
             targetRe = presetReValues['partially-turbulent'];
@@ -1814,22 +2082,18 @@ boundaryDetailBtn.addEventListener('click', () => {
             reynoldsInput.value = Math.round(targetRe).toString();
         }
     } else {
-        currentViewMode = 'full';
+        startViewTransition('full');
     }
-    annotationOffsets.clear();
     updateViewModeUI();
-    initParticles();
 });
 
 pipeWallDetailBtn.addEventListener('click', () => {
     if (currentViewMode === 'boundary') {
-        currentViewMode = 'wall';
+        startViewTransition('wall');
     } else if (currentViewMode === 'wall') {
-        currentViewMode = 'boundary';
+        startViewTransition('boundary');
     }
-    annotationOffsets.clear();
     updateViewModeUI();
-    initParticles();
 });
 
 
@@ -1869,6 +2133,20 @@ agaToggle.addEventListener('change', (e) => {
     agaExplanation.classList.toggle('hidden', !isChecked);
 });
 
+ipadProBtn.addEventListener('click', () => {
+    document.body.classList.toggle('ipad-pro-mode');
+    const isActive = document.body.classList.contains('ipad-pro-mode');
+    ipadProBtn.classList.toggle('active', isActive);
+    ipadProBtn.textContent = isActive ? 'Desktop View' : 'iPad Pro View';
+    ipadProBtn.setAttribute('aria-pressed', String(isActive));
+
+    // Let CSS transitions render before resizing canvas.
+    // The duration is set in the CSS for #app.
+    setTimeout(() => {
+        handleAppResize();
+    }, 450);
+});
+
 // --- Initialization ---
 function main() {
     setupCanvas(canvas);
@@ -1902,9 +2180,15 @@ function main() {
     initVerticalResizer();
     initInfoTabs();
     initDragHandler();
-    initMoodyDiagramDrag();
     updateRelativeRoughnessInput();
     setPreset('laminar');
+
+    fullScreenBtn.addEventListener('click', toggleFullScreen);
+    document.addEventListener('fullscreenchange', updateFullScreenButtonState);
+    document.addEventListener('webkitfullscreenchange', updateFullScreenButtonState);
+    document.addEventListener('mozfullscreenchange', updateFullScreenButtonState);
+    document.addEventListener('MSFullscreenChange', updateFullScreenButtonState);
+    updateFullScreenButtonState(); // Set initial state of the button
 
     animate();
 

@@ -1,4 +1,5 @@
 
+
 @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
 
 :root {
@@ -27,6 +28,11 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: background-color 0.4s ease-in-out;
+}
+
+body.ipad-pro-mode {
+    background-color: #111; /* Darken the background to highlight the app frame */
 }
 
 body.is-resizing,
@@ -55,18 +61,55 @@ body.is-resizing-v {
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     border: 1px solid rgba(255, 255, 255, 0.1);
     overflow: hidden;
-    position: relative; /* Positioning context for floating elements */
+    transition: width 0.4s ease-in-out, height 0.4s ease-in-out, box-shadow 0.4s ease-in-out;
 }
 
+body.ipad-pro-mode #app {
+    width: 1366px;
+    height: 1024px;
+    max-width: 98vw;
+    max-height: 98vh;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+}
+
+
 header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     background-color: rgba(255, 255, 255, 0.05);
-    padding: 0.75rem;
+    padding: 0.75rem 1rem;
     flex-shrink: 0;
 }
 
 header h1 {
     font-size: 1.5rem;
     font-weight: 700;
+    color: white;
+}
+
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+}
+
+.view-mode-btn {
+    font-family: var(--font-family);
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.4rem 0.8rem;
+    border: 1px solid var(--igt-color);
+    color: var(--igt-color);
+    background-color: transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.view-mode-btn:hover, .view-mode-btn.active {
+    background-color: var(--igt-color);
     color: white;
 }
 
@@ -495,26 +538,6 @@ canvas {
     font-size: 1.2rem;
 }
 
-/* --- Moody Diagram Draggable Styles --- */
-#moody-diagram-container.is-floating {
-    position: absolute;
-    z-index: 1000;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    transition: none; /* Disable transition while floating */
-}
-
-#moody-diagram-container.is-floating #moody-title {
-    cursor: move;
-    background-color: rgba(255,255,255,0.1);
-    padding-top: 0.5rem;
-    padding-bottom: 0.5rem;
-    margin: -1.5rem -1.5rem 0.75rem -1.5rem; /* Adjust to header */
-    border-radius: 8px 8px 0 0;
-}
-/* --- End Draggable Styles --- */
-
-
 .diagram-wrapper {
     position: relative;
     width: 100%;
@@ -651,6 +674,36 @@ canvas {
 
 .contribution-segment.label-hidden {
     color: transparent;
+}
+
+.contribution-legend {
+    display: flex;
+    justify-content: center;
+    gap: 1.5rem;
+    margin-top: 0.75rem;
+    font-size: 0.8rem;
+    opacity: 0.8;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.legend-color-box {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.legend-color-box.viscosity {
+    background-color: var(--igt-color);
+}
+
+.legend-color-box.roughness {
+    background-color: var(--secondary-color);
 }
 
 
@@ -790,6 +843,28 @@ canvas {
     border-radius: 0 4px 4px 0;
 }
 .key-takeaway ol {
+    padding-left: 1.5rem;
+}
+
+.deep-dive-box {
+    background-color: rgba(80, 227, 194, 0.1);
+    border-left: 4px solid #50e3c2;
+    padding: 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+}
+.deep-dive-box strong {
+    color: #50e3c2;
+    display: block;
+    margin-bottom: 0.5rem;
+}
+.deep-dive-box p, .deep-dive-box li {
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+.deep-dive-box ul {
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
     padding-left: 1.5rem;
 }
 
