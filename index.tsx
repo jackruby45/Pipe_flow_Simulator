@@ -1,4 +1,3 @@
-
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -1412,9 +1411,9 @@ function updateIndicatorsAndDashboard(re: number, absRoughness: number, diameter
 // --- Animation Loop Handlers ---
 function animateFullPipeView(time: number) {
      currentFrameHitboxes = [];
-     const trueRelativeRoughness = absoluteRoughnessIN / currentPipeDiameterIN;
-     const physicsProps = getFlowProperties(currentRe, trueRelativeRoughness);
-     currentF = physicsProps.friction;
+     // The global `currentF` is now updated in the main `animate` loop.
+     // We only need physicsProps to get the flow state for the explanation overlay.
+     const physicsProps = getFlowProperties(currentRe, absoluteRoughnessIN / currentPipeDiameterIN);
 
      drawPipe3D();
      drawBoundaryLayer(ctx, currentRe, time);
@@ -1529,22 +1528,28 @@ function animate() {
     currentRe += (targetRe - currentRe) * LERP_FACTOR;
     const trueRelativeRoughness = absoluteRoughnessIN / currentPipeDiameterIN;
 
+    // First, calculate properties based on the TRUE roughness for physics and accurate text display.
+    const physicsProps = getFlowProperties(currentRe, trueRelativeRoughness);
+    currentF = physicsProps.friction; // Set the global friction factor for physics simulation
+
+    // Update the main description text to reflect the true physical state.
+    const { title, text } = flowDescriptions[physicsProps.state];
+    flowTitle.textContent = title;
+    flowText.textContent = text;
+    metricState.textContent = title;
+    metricRe.textContent = Math.round(currentRe).toLocaleString();
+
+    // Second, calculate properties based on the SNAPPED roughness for the Moody Diagram indicator.
     const closestRoughnessLevel = ROUGHNESS_LEVELS.reduce((prev, curr) =>
         (Math.abs(curr.value - trueRelativeRoughness) < Math.abs(prev.value - trueRelativeRoughness) ? curr : prev)
     );
     const snappedRelativeRoughness = closestRoughnessLevel.value;
     const activeCurveId = closestRoughnessLevel.id;
+    const snappedFriction = getFlowProperties(currentRe, snappedRelativeRoughness).friction;
 
-    const uiProps = getFlowProperties(currentRe, snappedRelativeRoughness);
-    
-    metricRe.textContent = Math.round(currentRe).toLocaleString();
-    const { title, text } = flowDescriptions[uiProps.state];
-    flowTitle.textContent = title;
-    flowText.textContent = text;
-    metricState.textContent = title;
-    
-    updateIndicatorsAndDashboard(currentRe, absoluteRoughnessIN, currentPipeDiameterIN, 
-                                 snappedRelativeRoughness, activeCurveId, uiProps.friction);
+    // Update the dashboard and Moody plot using the snapped values so the dot aligns with a curve.
+    updateIndicatorsAndDashboard(currentRe, absoluteRoughnessIN, currentPipeDiameterIN,
+                                 snappedRelativeRoughness, activeCurveId, snappedFriction);
 
     // --- Update Velocity Profile ---
     let targetProfile = calculateProfile(currentRe, currentF, velocityCanvas.clientHeight);
