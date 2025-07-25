@@ -1,5 +1,4 @@
 
-
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -75,10 +74,8 @@ const moodyTitle = document.getElementById('moody-title') as HTMLHeadingElement;
 
 // Tab elements
 const diagramTabBtn = document.getElementById('diagram-tab-btn') as HTMLButtonElement;
-const aboutTabBtn = document.getElementById('about-tab-btn') as HTMLButtonElement;
 const presentationTabBtn = document.getElementById('presentation-tab-btn') as HTMLButtonElement;
 const diagramTabContent = document.getElementById('diagram-tab-content') as HTMLDivElement;
-const aboutTabContent = document.getElementById('about-tab-content') as HTMLDivElement;
 const presentationTabContent = document.getElementById('presentation-tab-content') as HTMLDivElement;
 
 const ipadProBtn = document.getElementById('ipad-pro-btn') as HTMLButtonElement;
@@ -459,7 +456,7 @@ function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: nu
     const collisionSurfaceY = Math.min(physicalWallY, sublayerTopY);
 
     // Base velocity in the free stream
-    let baseVx = mapLog(re, 2301, RE_MAX, 4, 15);
+    let baseVx = mapLog(re, 2301, RE_MAX, 4, 20); // Increased max speed for more pronounced effect
     let turbulenceFactor = Math.max(0, Math.log10(re / 2000)) * 2;
 
     p.vy += (Math.random() - 0.5) * turbulenceFactor * 0.2; // Gravity/settling effect
@@ -521,13 +518,18 @@ function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight
 
     const collisionSurfaceY = Math.min(physicalWallY, sublayerTopY);
 
+    // Make particle velocity scale with Reynolds number for a more dynamic feel.
+    const baseVx = mapLog(re, 2301, RE_MAX, 2, 9); // Scale base horizontal speed from 2 to 9
+    const turbulenceFactor = Math.max(0, Math.log10(re / 2000)) * 2.0; // Scale turbulence effect
+
     // 1. Update velocities based on current position
-    if (p.y > sublayerTopY) { // Inside sublayer or between peaks
-        p.vx += (Math.random() - 0.5) * 1.5 - (p.vx * 0.1);
-        p.vy += (Math.random() - 0.5) * 1.5 - (p.vy * 0.1);
-    } else { // Free stream
-        p.vx = 1 + Math.random();
-        p.vy += (Math.random() - 0.5) * 0.5;
+    if (p.y > sublayerTopY) { // Inside sublayer or between peaks - chaotic motion
+        // Less directional, more random swirling, influenced by turbulence factor
+        p.vx += (Math.random() - 0.5) * turbulenceFactor * 0.6 - (p.vx * 0.1);
+        p.vy += (Math.random() - 0.5) * turbulenceFactor * 0.6 - (p.vy * 0.1);
+    } else { // Free stream above the sublayer
+        p.vx = baseVx + (Math.random() - 0.5) * turbulenceFactor;
+        p.vy += (Math.random() - 0.5) * turbulenceFactor * 0.3; // Less vertical drift
     }
     
     // 2. Update position
@@ -713,43 +715,6 @@ function drawBoundaryLayer(context: CanvasRenderingContext2D, re: number, time: 
 
 
 // --- Helper Functions for Drawing ---
-/**
- * Calculates the optimal anchor point on a rectangle's border for an arrow
- * pointing to a target, ensuring the arrow starts at the edge and never
- * passes through the box.
- * @param box The bounding box of the annotation.
- * @param toX The x-coordinate of the arrow's target.
- * @param toY The y-coordinate of the arrow's target.
- * @returns The {x, y} coordinates for the arrow's starting point.
- */
-const getArrowAnchorPoint = (box: { x: number; y: number; width: number; height: number; }, toX: number, toY: number): { x: number, y: number } => {
-    const cx = box.x + box.width / 2;
-    const cy = box.y + box.height / 2;
-    const dx = toX - cx;
-    const dy = toY - cy;
-    const halfW = box.width / 2;
-    const halfH = box.height / 2;
-
-    // If target is inside, start from target itself to create a zero-length arrow
-    if (Math.abs(dx) <= halfW && Math.abs(dy) <= halfH) {
-        return { x: toX, y: toY };
-    }
-
-    // Determine which edge the line from the center to the target intersects with
-    // by comparing the slopes of the line and the box's diagonals.
-    if (Math.abs(dx) * halfH > Math.abs(dy) * halfW) {
-        // Intersects with left or right edge
-        const x = cx + (dx > 0 ? halfW : -halfW);
-        const y = cy + dy * (halfW / Math.abs(dx));
-        return { x, y };
-    } else {
-        // Intersects with top or bottom edge
-        const x = cx + dx * (halfH / Math.abs(dy));
-        const y = cy + (dy > 0 ? halfH : -halfH);
-        return { x, y };
-    }
-};
-
 const drawTextWithBackground = (
     context: CanvasRenderingContext2D,
     text: string,
@@ -966,16 +931,13 @@ function drawExplanationOverlay(
 
     if (uiFlowState === 'laminar' || uiFlowState === 'transition') {
         const text1 = drawTextWithBackground(context, 'Smooth, parallel layers', 100, 40, 'center', 'explain-laminar-1');
-        const anchor1 = getArrowAnchorPoint(text1, 100, 85);
-        drawArrow(context, anchor1.x, anchor1.y, 100, 85, progress);
+        drawArrow(context, text1.x + text1.width/2, text1.y + text1.height, 100, 85, progress);
 
         const text2 = drawTextWithBackground(context, 'Max Velocity at Center', centerX, centerY - 40, 'center', 'explain-laminar-2');
-        const anchor2 = getArrowAnchorPoint(text2, centerX, centerY);
-        drawArrow(context, anchor2.x, anchor2.y, centerX, centerY, progress);
+        drawArrow(context, text2.x + text2.width/2, text2.y + text2.height, centerX, centerY, progress);
 
         const text3 = drawTextWithBackground(context, 'Velocity ≈ 0 at Wall', width - 100, WALL_BUFFER + 25, 'center', 'explain-laminar-3');
-        const anchor3 = getArrowAnchorPoint(text3, width - 100, WALL_BUFFER + 5);
-        drawArrow(context, anchor3.x, anchor3.y, width - 100, WALL_BUFFER + 5, progress);
+        drawArrow(context, text3.x + text3.width/2, text3.y + text3.height, width - 100, WALL_BUFFER + 5, progress);
 
         drawInfoBox(context, 'Laminar Flow Impact', [
             '<b>Friction Driver:</b> Fluid Viscosity',
@@ -992,8 +954,7 @@ function drawExplanationOverlay(
         const eddyRadius = 20;
 
         const text1 = drawTextWithBackground(context, 'Chaotic Eddies & Mixing', eddyX, eddyY - eddyRadius - 25, 'center', 'explain-turb-1');
-        const anchor1 = getArrowAnchorPoint(text1, eddyX, eddyY - eddyRadius);
-        drawArrow(context, anchor1.x, anchor1.y, eddyX, eddyY - eddyRadius, progress);
+        drawArrow(context, text1.x + text1.width/2, text1.y + text1.height, eddyX, eddyY - eddyRadius, progress);
         context.beginPath();
         context.arc(eddyX, eddyY, eddyRadius * progress, 0, Math.PI * 2);
         context.stroke();
@@ -1010,8 +971,7 @@ function drawExplanationOverlay(
 
         if (physicsFlowState === 'fully-turbulent') {
             const text3 = drawTextWithBackground(context, 'Thin Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
-            const anchor3 = getArrowAnchorPoint(text3, 100, boundaryLayerYTop - 5);
-            drawArrow(context, anchor3.x, anchor3.y, 100, boundaryLayerYTop - 5, progress);
+            drawArrow(context, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
             drawInfoBox(context, 'Complete Turbulence Impact', [
                 '<b>Friction Driver:</b> Pipe Roughness',
                 '<b>Pressure Drop:</b> Maximum',
@@ -1022,8 +982,7 @@ function drawExplanationOverlay(
             ], easeOutProgress, 'explain-fullyturb-infobox');
         } else { // Partially turbulent
             const text3 = drawTextWithBackground(context, 'Thicker Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
-            const anchor3 = getArrowAnchorPoint(text3, 100, boundaryLayerYTop - 5);
-            drawArrow(context, anchor3.x, anchor3.y, 100, boundaryLayerYTop - 5, progress);
+            drawArrow(context, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
             drawInfoBox(context, 'Partial Turbulence Impact', [
                 '<b>Friction Driver:</b> Re & Roughness',
                 '<b>Pressure Drop:</b> High',
@@ -1100,8 +1059,7 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
         ], 1.0, 'boundary-infobox');
 
         const textRect = drawTextWithBackground(context, 'Roughness buried in sublayer', width / 2, wallBaseY - roughnessHeight - 20, 'center', 'boundary-text-1');
-        const anchor1 = getArrowAnchorPoint(textRect, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
-        drawArrow(context, anchor1.x, anchor1.y, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
+        drawArrow(context, textRect.x + textRect.width / 2, textRect.y + textRect.height, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
     } else {
         drawInfoBox(context, 'Rough Flow', [
             'Roughness elements pierce the thin <b>viscous',
@@ -1111,25 +1069,19 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
             '<b>Friction Driver:</b> Pipe Roughness (ε)'
         ], 1.0, 'boundary-infobox');
         const textRect = drawTextWithBackground(context, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - roughnessHeight - 40, 'center', 'boundary-text-1');
-        const anchor1 = getArrowAnchorPoint(textRect, width / 2 + 5, wallBaseY - roughnessHeight + 5);
-        drawArrow(context, anchor1.x, anchor1.y, width / 2 + 5, wallBaseY - roughnessHeight + 5);
+        drawArrow(context, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - roughnessHeight + 5);
     }
     
     // Label Layers
     const boundaryLabelY = boundaryLayerTopY + (viscousSublayerTopY - boundaryLayerTopY) / 2;
     const boundaryRect = drawTextWithBackground(context, 'Turbulent Layer', 120, boundaryLabelY, 'center', 'boundary-boundary-label');
-    const anchorB1 = getArrowAnchorPoint(boundaryRect, boundaryRect.x, boundaryLayerTopY);
-    drawArrow(context, anchorB1.x, anchorB1.y, boundaryRect.x, boundaryLayerTopY);
-    const anchorB2 = getArrowAnchorPoint(boundaryRect, boundaryRect.x, viscousSublayerTopY);
-    drawArrow(context, anchorB2.x, anchorB2.y, boundaryRect.x, viscousSublayerTopY);
-
+    drawArrow(context, boundaryRect.x, boundaryRect.y - boundaryRect.height / 2, boundaryRect.x, boundaryLayerTopY);
+    drawArrow(context, boundaryRect.x, boundaryRect.y + boundaryRect.height / 2, boundaryRect.x, viscousSublayerTopY);
 
     const sublayerLabelY = viscousSublayerTopY + viscousSublayerThickness / 2;
     const sublayerRect = drawTextWithBackground(context, 'Viscous Sublayer', width - 120, sublayerLabelY, 'center', 'boundary-sublayer-label');
-    const anchorS1 = getArrowAnchorPoint(sublayerRect, sublayerRect.x, viscousSublayerTopY);
-    drawArrow(context, anchorS1.x, anchorS1.y, sublayerRect.x, viscousSublayerTopY);
-    const anchorS2 = getArrowAnchorPoint(sublayerRect, sublayerRect.x, wallBaseY);
-    drawArrow(context, anchorS2.x, anchorS2.y, sublayerRect.x, wallBaseY);
+    drawArrow(context, sublayerRect.x, sublayerRect.y - sublayerRect.height / 2, sublayerRect.x, viscousSublayerTopY);
+    drawArrow(context, sublayerRect.x, sublayerRect.y + sublayerRect.height / 2, sublayerRect.x, wallBaseY);
 
     context.restore();
 }
@@ -1299,9 +1251,7 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     const sublayerLabelCoords = { x: 40, y: 220 };
     
     const turbulentLabelRect = drawTextWithBackground(context, 'Turbulent Layer', 40, 70, 'left', 'wall-boundary-label');
-    const targetTurbulentX = turbulentLabelRect.x + turbulentLabelRect.width / 2;
-    const anchorTurbulent = getArrowAnchorPoint(turbulentLabelRect, targetTurbulentX, boundaryLayerTopY);
-    drawArrow(context, anchorTurbulent.x, anchorTurbulent.y, targetTurbulentX, boundaryLayerTopY);
+    drawArrow(context, turbulentLabelRect.x + 20, turbulentLabelRect.y + turbulentLabelRect.height, turbulentLabelRect.x + 20, boundaryLayerTopY);
 
     if (isSmooth) {
         drawInfoBox(context, 'Wall View: Hydraulically Smooth', [
@@ -1315,14 +1265,10 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
         ], 1.0, 'wall-infobox', infoBoxCoords);
         
         const peakRect = drawTextWithBackground(context, 'Submerged Peak (ε)', peakLabelCoords.x, peakLabelCoords.y, 'center', 'wall-peak-label');
-        const anchorPeak = getArrowAnchorPoint(peakRect, highestPeakX, roughnessPeakY);
-        drawArrow(context, anchorPeak.x, anchorPeak.y, highestPeakX, roughnessPeakY);
+        drawArrow(context, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, highestPeakX, roughnessPeakY);
         
         const sublayerRect = drawTextWithBackground(context, 'Thick viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
-        const targetSublayerX = sublayerRect.x + sublayerRect.width / 2;
-        const anchorSublayer = getArrowAnchorPoint(sublayerRect, targetSublayerX, viscousSublayerTopY);
-        drawArrow(context, anchorSublayer.x, anchorSublayer.y, targetSublayerX, viscousSublayerTopY);
-
+        drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY);
     } else {
         drawInfoBox(context, 'Wall View: Rough Flow', [
             'The <b>viscous sublayer</b> is very thin, failing',
@@ -1335,13 +1281,10 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
         ], 1.0, 'wall-infobox', infoBoxCoords);
         
         const peakRect = drawTextWithBackground(context, 'Exposed Peak creates drag', peakLabelCoords.x, peakLabelCoords.y, 'center', 'wall-peak-label');
-        const anchorPeak = getArrowAnchorPoint(peakRect, highestPeakX, roughnessPeakY);
-        drawArrow(context, anchorPeak.x, anchorPeak.y, highestPeakX, roughnessPeakY);
+        drawArrow(context, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, highestPeakX, roughnessPeakY);
 
         const sublayerRect = drawTextWithBackground(context, 'Thin viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
-        const targetSublayerX = sublayerRect.x + sublayerRect.width / 2;
-        const anchorSublayer = getArrowAnchorPoint(sublayerRect, targetSublayerX, viscousSublayerTopY);
-        drawArrow(context, anchorSublayer.x, anchorSublayer.y, targetSublayerX, viscousSublayerTopY);
+        drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY);
     }
     
     context.restore();
@@ -1804,8 +1747,8 @@ function initVerticalResizer() {
 }
 
 function initInfoTabs() {
-    const tabs = [diagramTabBtn, aboutTabBtn, presentationTabBtn];
-    const panels = [diagramTabContent, aboutTabContent, presentationTabContent];
+    const tabs = [diagramTabBtn, presentationTabBtn];
+    const panels = [diagramTabContent, presentationTabContent];
 
     const switchTab = (tabToActivate: HTMLButtonElement) => {
         const panelToActivate = document.getElementById(tabToActivate.getAttribute('aria-controls')!);
