@@ -456,14 +456,10 @@ function updateParticleInFullView(p: Particle, re: number, f: number) {
     p.color = getColorForVelocity(p.vx, 12);
 }
 
-function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: number, viscousSublayerThickness: number) {
+function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: number, sublayerTopY: number) {
     const wallBaseY = canvas.clientHeight * 0.9;
     const roughnessXIndex = Math.max(0, Math.min(Math.floor(p.x), roughnessProfile.length - 1));
-    const physicalWallY = wallBaseY - roughnessProfile[roughnessXIndex] * roughnessHeight;
-    const sublayerTopY = wallBaseY - viscousSublayerThickness;
-    
-    // The particle collides with the highest surface: either the sublayer or a roughness peak.
-    const collisionSurfaceY = Math.min(physicalWallY, sublayerTopY);
+    const physicalWallY = wallBaseY - (roughnessProfile[roughnessXIndex] || 0) * roughnessHeight;
 
     // Base velocity in the free stream
     let baseVx = mapLog(re, 2301, RE_MAX, 4, 20); // Increased max speed for more pronounced effect
@@ -481,21 +477,14 @@ function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: nu
     p.x += p.vx;
     p.y += p.vy;
 
-    // Collision with the effective wall (sublayer or roughness peak)
-    if (p.y + p.radius > collisionSurfaceY) {
-        p.y = collisionSurfaceY - p.radius;
+    // Collision with the physical wall surface
+    if (p.y + p.radius > physicalWallY) {
+        p.y = physicalWallY - p.radius;
 
-        // If the particle hits the rough physical wall directly (i.e., a peak is exposed)
-        if (collisionSurfaceY === physicalWallY) {
-            // More "radical" collision to show form drag and eddies
-            p.vy = -(Math.random() * 3 + 2); // Strong, random upward kick
-            p.vx += (Math.random() - 0.5) * 6;   // Strong random sideways kick
-            p.flashFrames = 8; // Flash for 8 frames to visualize the 'radical' collision
-        } else {
-            // Softer bounce off the top of the viscous sublayer
-            p.vx *= 0.8; // Dampen horizontal speed
-            p.vy *= -0.4; // Gentle bounce
-        }
+        // Always use the "radical" collision to show form drag and eddies
+        p.vy = -(Math.random() * 3 + 2); // Strong, random upward kick
+        p.vx += (Math.random() - 0.5) * 6;   // Strong random sideways kick
+        p.flashFrames = 8; // Flash for 8 frames to visualize the 'radical' collision
     }
     
     // Reset particle
@@ -516,9 +505,8 @@ function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: nu
     }
 }
 
-function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight: number, viscousSublayerThickness: number) {
+function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight: number, sublayerTopY: number) {
     const wallBaseY = canvas.clientHeight * 0.85;
-    const sublayerTopY = wallBaseY - viscousSublayerThickness;
 
     // Normalize the roughness profile so its values span from 0 to 1 exactly.
     // This ensures consistency between physics and visuals.
@@ -534,10 +522,8 @@ function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight
 
     // Ensure index is within bounds, handling wrapping
     const roughnessXIndex = Math.floor(p.x + canvas.clientWidth) % canvas.clientWidth;
-    const normalizedProfileValue = (roughnessProfile[roughnessXIndex] - minProfile) / profileRange;
+    const normalizedProfileValue = ((roughnessProfile[roughnessXIndex] || 0) - minProfile) / profileRange;
     const physicalWallY = wallBaseY - normalizedProfileValue * roughnessHeight;
-
-    const collisionSurfaceY = Math.min(physicalWallY, sublayerTopY);
 
     // Make particle velocity scale with Reynolds number for a more dynamic feel.
     const baseVx = mapLog(re, 2301, RE_MAX, 2, 9); // Scale base horizontal speed from 2 to 9
@@ -557,21 +543,14 @@ function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight
     p.x += p.vx;
     p.y += p.vy;
 
-    // 3. Handle collisions with the effective wall
-    if (p.y + p.radius > collisionSurfaceY) {
-        p.y = collisionSurfaceY - p.radius;
+    // 3. Handle collisions with the physical wall
+    if (p.y + p.radius > physicalWallY) {
+        p.y = physicalWallY - p.radius;
         
-        // If the particle hits the rough physical wall directly
-        if (collisionSurfaceY === physicalWallY) {
-            // Radical collision creating a visible "kick" to represent form drag
-            p.vy = -(Math.random() * 4 + 2);   // Strong, unpredictable upward bounce
-            p.vx += (Math.random() - 0.5) * 5; // Kick to the side, simulating an eddy
-            p.flashFrames = 8; // Flash for 8 frames to visualize the 'radical' collision
-        } else {
-            // Softer "skimming" collision with the top of the viscous sublayer
-            p.vx *= -0.3; // Dampen and slightly reverse horizontal motion
-            p.vy *= -0.5; // Smoother bounce
-        }
+        // Radical collision creating a visible "kick" to represent form drag
+        p.vy = -(Math.random() * 4 + 2);   // Strong, unpredictable upward bounce
+        p.vx += (Math.random() - 0.5) * 5; // Kick to the side, simulating an eddy
+        p.flashFrames = 8; // Flash for 8 frames to visualize the 'radical' collision
     }
 
     // 4. Handle particle reset if it goes offscreen
@@ -1243,7 +1222,25 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     const boundaryLayerThickness = mapLog(re, 2301, RE_MAX, 100, 40);
     const viscousSublayerThickness = mapLog(re, 2301, RE_MAX, 40, 5); // Thinner than boundary layer
     const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
-    const viscousSublayerTopY = wallBaseY - viscousSublayerThickness;
+
+    // --- Find highest peak and lowest valley for sublayer positioning ---
+    let minRoughnessValue = 1.0;
+    let maxRoughnessValue = 0;
+    if (roughnessProfile.length > 0) {
+        for (const val of roughnessProfile) {
+            if (val > maxRoughnessValue) maxRoughnessValue = val;
+            if (val < minRoughnessValue) minRoughnessValue = val;
+        }
+    } else {
+        minRoughnessValue = 0;
+    }
+    const highestPeakAbsoluteHeight = maxRoughnessValue * roughnessHeight;
+    const lowestValleyAbsoluteHeight = minRoughnessValue * roughnessHeight;
+    
+    // The visual top of the viscous sublayer moves from the highest peak down towards the lowest valley as Re increases.
+    const startY = wallBaseY - highestPeakAbsoluteHeight;
+    const endY = wallBaseY - lowestValleyAbsoluteHeight;
+    const viscousSublayerTopY_visual = re <= 2300 ? startY : mapLog(re, 2301, RE_MAX, startY, endY);
     
     // --- Draw Wall & Layers ---
     // STEP 1: Draw the wall material, filling the space below the roughness profile.
@@ -1253,7 +1250,7 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     if (roughnessProfile.length > 0) {
         context.lineTo(0, wallBaseY - roughnessProfile[0] * roughnessHeight); // Go to first point on wall profile
         for (let x = 1; x < width; x++) {
-            context.lineTo(x, wallBaseY - roughnessProfile[x] * roughnessHeight); // Draw the profile
+            context.lineTo(x, wallBaseY - (roughnessProfile[x] || 0) * roughnessHeight); // Draw the profile
         }
     } else {
         context.lineTo(0, wallBaseY);
@@ -1270,7 +1267,7 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     if (roughnessProfile.length > 0) {
         context.moveTo(0, wallBaseY - roughnessProfile[0] * roughnessHeight); // Start at top-left of wall
         for (let x = 1; x < width; x++) {
-            context.lineTo(x, wallBaseY - roughnessProfile[x] * roughnessHeight);
+            context.lineTo(x, wallBaseY - (roughnessProfile[x] || 0) * roughnessHeight);
         }
     } else {
         context.moveTo(0, wallBaseY);
@@ -1281,18 +1278,18 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     context.closePath();
     context.clip();
 
-    // STEP 3: Draw the layers as simple rectangles. They will be clipped by the wall shape.
+    // STEP 3: Draw layers. Draw the larger boundary layer first, then the sublayer on top.
     const boundaryGradient = context.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
     boundaryGradient.addColorStop(0, 'rgba(233, 69, 96, 0)');
     boundaryGradient.addColorStop(1, 'rgba(233, 69, 96, 0.4)');
     context.fillStyle = boundaryGradient;
-    context.fillRect(0, boundaryLayerTopY, width, boundaryLayerThickness);
+    context.fillRect(0, boundaryLayerTopY, width, height);
 
-    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
+    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY_visual, 0, wallBaseY);
     sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0)');
     sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.65)');
     context.fillStyle = sublayerGradient;
-    context.fillRect(0, viscousSublayerTopY, width, viscousSublayerThickness);
+    context.fillRect(0, viscousSublayerTopY_visual, width, height);
     
     context.restore(); // STEP 4: Restore context to remove clipping for subsequent draws.
     
@@ -1330,7 +1327,7 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
                 context.save();
                 context.beginPath();
                 // Clip ripples inside the viscous sublayer
-                context.rect(0, 0, width, viscousSublayerTopY);
+                context.rect(0, 0, width, viscousSublayerTopY_visual);
                 context.clip();
                 context.beginPath();
                 context.arc(peakX, peakY, currentRadius, 0, Math.PI * 2);
@@ -1349,10 +1346,10 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     context.lineWidth = 1.5;
 
     // Draw the new Boundary Profile gauge
-    drawBoundaryProfile(context, boundaryLayerThickness, viscousSublayerThickness, roughnessHeight, 'boundary-profile-gauge');
+    drawBoundaryProfile(context, boundaryLayerThickness, viscousSublayerThickness, highestPeakAbsoluteHeight, 'boundary-profile-gauge');
 
     // The key comparison is if roughness pierces the viscous sublayer
-    const isSmooth = viscousSublayerThickness > roughnessHeight;
+    const isSmooth = viscousSublayerThickness > highestPeakAbsoluteHeight;
 
     if (isSmooth) {
         drawInfoBox(context, 'Hydraulically Smooth Flow', [
@@ -1374,19 +1371,21 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
             'This creates eddies and form drag.',
             '<b>Friction Driver:</b> Pipe Roughness (ε)'
         ], 1.0, 'boundary-infobox');
-        const textRect = drawTextWithBackground(context, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - roughnessHeight - 40, 'center', 'boundary-text-1');
-        drawArrow(context, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - roughnessHeight + 5);
+        const textRect = drawTextWithBackground(context, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - highestPeakAbsoluteHeight - 40, 'center', 'boundary-text-1');
+        drawArrow(context, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - highestPeakAbsoluteHeight + 5);
     }
     
     // Label Layers
-    const boundaryLabelY = boundaryLayerTopY + (viscousSublayerTopY - boundaryLayerTopY) / 2;
+    const sublayerThicknessForLabel = mapLog(re, 2301, RE_MAX, 40, 5);
+    const physicalViscousSublayerTopY = wallBaseY - sublayerThicknessForLabel; 
+    const boundaryLabelY = boundaryLayerTopY + (physicalViscousSublayerTopY - boundaryLayerTopY) / 2;
     const boundaryRect = drawTextWithBackground(context, 'Turbulent Layer', 120, boundaryLabelY, 'center', 'boundary-boundary-label');
     drawArrow(context, boundaryRect.x, boundaryRect.y - boundaryRect.height / 2, boundaryRect.x, boundaryLayerTopY);
-    drawArrow(context, boundaryRect.x, boundaryRect.y + boundaryRect.height / 2, boundaryRect.x, viscousSublayerTopY);
+    drawArrow(context, boundaryRect.x, boundaryRect.y + boundaryRect.height / 2, boundaryRect.x, physicalViscousSublayerTopY);
 
-    const sublayerLabelY = viscousSublayerTopY + viscousSublayerThickness / 2;
+    const sublayerLabelY = physicalViscousSublayerTopY + sublayerThicknessForLabel / 2;
     const sublayerRect = drawTextWithBackground(context, 'Viscous Sublayer', width - 120, sublayerLabelY, 'center', 'boundary-sublayer-label');
-    drawArrow(context, sublayerRect.x, sublayerRect.y - sublayerRect.height / 2, sublayerRect.x, viscousSublayerTopY);
+    drawArrow(context, sublayerRect.x, sublayerRect.y - sublayerRect.height / 2, sublayerRect.x, physicalViscousSublayerTopY);
     drawArrow(context, sublayerRect.x, sublayerRect.y + sublayerRect.height / 2, sublayerRect.x, wallBaseY);
 
     context.restore();
@@ -1406,14 +1405,12 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
 
     const boundaryLayerThickness = mapLog(re, 2301, RE_MAX, 250, 80); // Scaled for extreme zoom
 
-    // New scaling: 0.008 roughness = 50% of boundary layer height. Scales linearly from that anchor.
-    const anchorRoughness = 0.008; // inches
-    const anchorScaleFactor = 0.5; // 50%
-    const roughnessHeight = (absRoughness / anchorRoughness) * (boundaryLayerThickness * anchorScaleFactor);
+    // Use a fixed zoom factor to prevent roughness from "squeezing" with Re changes.
+    const wallViewZoomFactor = 25000;
+    const roughnessHeight = absRoughness * wallViewZoomFactor;
 
     const viscousSublayerThickness = mapLog(re, 2301, RE_MAX, 80, 10);
     const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
-    const viscousSublayerTopY = wallBaseY - viscousSublayerThickness;
 
     // Normalize the roughness profile so its values span from 0 to 1 exactly.
     let minProfile = 1.0;
@@ -1440,14 +1437,17 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     }
     const normalizedHighestPeak = (maxRoughnessValue - minProfile) / profileRange;
     const highestPeakAbsoluteHeight = normalizedHighestPeak * roughnessHeight;
-    const roughnessPeakY = wallBaseY - highestPeakAbsoluteHeight;
+    const roughnessPeakY = wallBaseY - highestPeakAbsoluteHeight; // Retain for annotations that might need it
+    
+    // The lowest valley corresponds to a normalized profile value of 0, so its height is 0.
+    const lowestValleyAbsoluteHeight = 0;
 
     // --- Draw Wall & Layers ---
     // STEP 1: Draw the wall material shape itself.
     context.beginPath();
     context.moveTo(0, height); // Start at the bottom-left of the canvas.
     for (let x = 0; x < width; x++) {
-        const normalizedProfileValue = (roughnessProfile[x] - minProfile) / profileRange;
+        const normalizedProfileValue = ((roughnessProfile[x] || 0) - minProfile) / profileRange;
         const roughnessY = wallBaseY - normalizedProfileValue * roughnessHeight;
         context.lineTo(x, roughnessY);
     }
@@ -1456,14 +1456,18 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     context.fillStyle = '#4a5568';
     context.fill();
 
-    context.save(); // Save context before clipping
+    // The visual top of the viscous sublayer moves from the highest peak down towards the lowest valley as Re increases.
+    const startY = wallBaseY - highestPeakAbsoluteHeight;
+    const endY = wallBaseY - lowestValleyAbsoluteHeight; // Effectively wallBaseY
+    const viscousSublayerTopY_visual = re <= 2300 ? startY : mapLog(re, 2301, RE_MAX, startY, endY);
 
-    // STEP 2: Create a clipping region that is everything ABOVE the wall profile.
+    // STEP 2 & 3: Draw layers, clipped to wall profile.
+    context.save();
     context.beginPath();
-    const firstRoughnessY = wallBaseY - ((roughnessProfile[0] - minProfile) / profileRange) * roughnessHeight;
+    const firstRoughnessY = wallBaseY - (((roughnessProfile[0] || 0) - minProfile) / profileRange) * roughnessHeight;
     context.moveTo(0, firstRoughnessY);
     for (let x = 1; x < width; x++) {
-        const normalizedProfileValue = (roughnessProfile[x] - minProfile) / profileRange;
+        const normalizedProfileValue = ((roughnessProfile[x] || 0) - minProfile) / profileRange;
         const roughnessY = wallBaseY - normalizedProfileValue * roughnessHeight;
         context.lineTo(x, roughnessY);
     }
@@ -1472,18 +1476,19 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     context.closePath();
     context.clip();
 
-    // STEP 3: Draw the layers as simple rectangles.
+    // Draw the main boundary layer first. It extends from its top to the wall.
     const boundaryGradient = context.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
     boundaryGradient.addColorStop(0, 'rgba(233, 69, 96, 0)');
     boundaryGradient.addColorStop(1, 'rgba(233, 69, 96, 0.8)');
     context.fillStyle = boundaryGradient;
-    context.fillRect(0, boundaryLayerTopY, width, boundaryLayerThickness);
+    context.fillRect(0, boundaryLayerTopY, width, height); // Fill all the way down
 
-    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
+    // Draw the viscous sublayer on top. It extends from its visual top down to the wall.
+    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY_visual, 0, wallBaseY);
     sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0.2)');
     sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.95)');
     context.fillStyle = sublayerGradient;
-    context.fillRect(0, viscousSublayerTopY, width, viscousSublayerThickness);
+    context.fillRect(0, viscousSublayerTopY_visual, width, height); // Fill all the way down
 
     context.restore(); // STEP 4: Restore context to remove clipping.
     
@@ -1498,7 +1503,7 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
         // Find the top 5 highest peaks currently visible
         let peaks = [];
         for (let x = 0; x < width; x++) {
-            const normalizedProfileValue = (roughnessProfile[x] - minProfile) / profileRange;
+            const normalizedProfileValue = ((roughnessProfile[x] || 0) - minProfile) / profileRange;
             const peakHeight = normalizedProfileValue * roughnessHeight;
             if (peakHeight > 0) {
                 peaks.push({ x, height: peakHeight });
@@ -1523,7 +1528,7 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
                 context.save();
                 context.beginPath();
                 // Create a clipping region to keep ripples inside the viscous sublayer
-                context.rect(0, 0, width, viscousSublayerTopY);
+                context.rect(0, 0, width, viscousSublayerTopY_visual);
                 context.clip();
                 
                 context.beginPath();
@@ -1540,10 +1545,10 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     // Add glowing outline to wall profile ON TOP of layers
     context.save();
     context.beginPath();
-    const firstNormalizedValue = (roughnessProfile[0] - minProfile) / profileRange;
+    const firstNormalizedValue = ((roughnessProfile[0] || 0) - minProfile) / profileRange;
     context.moveTo(0, wallBaseY - firstNormalizedValue * roughnessHeight);
     for (let x = 1; x < width; x++) {
-        const normalizedProfileValue = (roughnessProfile[x] - minProfile) / profileRange;
+        const normalizedProfileValue = ((roughnessProfile[x] || 0) - minProfile) / profileRange;
         context.lineTo(x, wallBaseY - normalizedProfileValue * roughnessHeight);
     }
     context.strokeStyle = 'rgba(200, 220, 255, 0.5)';
@@ -1559,8 +1564,8 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     // --- Add a distinct glowing line to separate layers ---
     context.save();
     context.beginPath();
-    context.moveTo(0, viscousSublayerTopY);
-    context.lineTo(width, viscousSublayerTopY);
+    context.moveTo(0, viscousSublayerTopY_visual);
+    context.lineTo(width, viscousSublayerTopY_visual);
     context.strokeStyle = 'rgba(200, 220, 255, 0.7)';
     context.lineWidth = 2;
     context.filter = 'blur(2px)';
@@ -1640,7 +1645,7 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
         drawArrow(context, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, highestPeakX, roughnessPeakY);
         
         const sublayerRect = drawTextWithBackground(context, 'Thick viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
-        drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY);
+        drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY_visual);
     } else {
         drawInfoBox(context, 'Wall View: Rough Flow', [
             'The <b>viscous sublayer</b> is very thin, failing',
@@ -1656,7 +1661,7 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
         drawArrow(context, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, highestPeakX, roughnessPeakY);
 
         const sublayerRect = drawTextWithBackground(context, 'Thin viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
-        drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY);
+        drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY_visual);
     }
     
     context.restore();
@@ -1808,12 +1813,29 @@ function animateDetailView(time: number) {
     currentFrameHitboxes = [];
     const zoomFactor = 2000;
     const roughnessHeight = absoluteRoughnessIN * zoomFactor;
-    const viscousSublayerThickness = mapLog(currentRe, 2301, RE_MAX, 40, 5);
     
+    // Calculate heights and dynamic sublayer top for physics consistency
+    let minRoughnessValue = 1.0;
+    let maxRoughnessValue = 0;
+    if (roughnessProfile.length > 0) {
+        for (const val of roughnessProfile) {
+            if (val > maxRoughnessValue) maxRoughnessValue = val;
+            if (val < minRoughnessValue) minRoughnessValue = val;
+        }
+    } else {
+        minRoughnessValue = 0;
+    }
+    const highestPeakAbsoluteHeight = maxRoughnessValue * roughnessHeight;
+    const lowestValleyAbsoluteHeight = minRoughnessValue * roughnessHeight;
+    const wallBaseY = canvas.clientHeight * 0.9;
+    const startY = wallBaseY - highestPeakAbsoluteHeight;
+    const endY = wallBaseY - lowestValleyAbsoluteHeight;
+    const sublayerTopY = currentRe <= 2300 ? startY : mapLog(currentRe, 2301, RE_MAX, startY, endY);
+
     drawBoundaryDetailView(ctx, currentRe, absoluteRoughnessIN, time);
 
     particles.forEach(p => {
-        updateParticleInDetailView(p, currentRe, roughnessHeight, viscousSublayerThickness);
+        updateParticleInDetailView(p, currentRe, roughnessHeight, sublayerTopY);
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
@@ -1828,16 +1850,24 @@ function animatePipeWallDetailView(time: number) {
     
     drawPipeWallDetailView(ctx, currentRe, absoluteRoughnessIN, time);
 
-    // Ensure physics scaling matches visual scaling for consistent collisions.
-    const boundaryLayerThickness = mapLog(currentRe, 2301, RE_MAX, 250, 80);
-    const anchorRoughness = 0.008; // inches
-    const anchorScaleFactor = 0.5; // 50%
-    const roughnessHeight = (absoluteRoughnessIN / anchorRoughness) * (boundaryLayerThickness * anchorScaleFactor);
+    // Calculate dynamic sublayer top for physics consistency.
+    // Must be consistent with the logic in drawPipeWallDetailView.
+    const wallViewZoomFactor = 25000;
+    const roughnessHeight = absoluteRoughnessIN * wallViewZoomFactor;
     
-    const viscousSublayerThickness = mapLog(currentRe, 2301, RE_MAX, 80, 10);
+    // Since particle physics uses the normalized profile, the highest peak
+    // has a conceptual height of 1.0 * roughnessHeight.
+    const highestPeakAbsoluteHeight = roughnessHeight;
+    const lowestValleyAbsoluteHeight = 0;
+
+    const wallBaseY = canvas.clientHeight * 0.85;
+    const startY = wallBaseY - highestPeakAbsoluteHeight;
+    const endY = wallBaseY - lowestValleyAbsoluteHeight;
+    const sublayerTopY = currentRe <= 2300 ? startY : mapLog(currentRe, 2301, RE_MAX, startY, endY);
+
 
     particles.forEach(p => {
-        updateParticleInWallDetailView(p, currentRe, roughnessHeight, viscousSublayerThickness);
+        updateParticleInWallDetailView(p, currentRe, roughnessHeight, sublayerTopY);
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
