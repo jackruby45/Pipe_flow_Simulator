@@ -134,13 +134,24 @@ let transitionTargetView: ViewMode | null = null;
 let isFullScreenRequestPending = false;
 
 
-// --- State for Draggable Annotations ---
-const annotationOffsets: Map<string, {x: number, y: number}> = new Map();
-let currentFrameHitboxes: {id: string, rect: {x: number, y: number, width: number, height: number}}[] = [];
+// --- State for Draggable/Resizable Annotations ---
+interface AnnotationState {
+    offset: { x: number; y: number };
+    size?: { width: number; height: number };
+}
+interface Hitbox {
+    id: string;
+    rect: { x: number; y: number; width: number; height: number };
+    type: 'drag' | 'resize' | 'toggle-visibility';
+}
+const annotations: Map<string, AnnotationState> = new Map();
+const annotationVisibility: Map<string, boolean> = new Map();
+let currentFrameHitboxes: Hitbox[] = [];
 let draggedAnnotationId: string | null = null;
-let isDragging = false;
+let dragMode: 'drag' | 'resize' | null = null;
+let isInteracting = false;
 let dragStartPos = { x: 0, y: 0 };
-let dragStartOffset = { x: 0, y: 0 };
+let dragStartAnnotationState: AnnotationState | null = null;
 
 
 const flowDescriptions = {
@@ -731,6 +742,27 @@ function drawBoundaryLayer(context: CanvasRenderingContext2D, re: number, time: 
 
 
 // --- Helper Functions for Drawing ---
+const drawPlaceholder = (context: CanvasRenderingContext2D, id: string, x: number, y: number) => {
+    const placeholderSize = 32;
+    context.save();
+    context.fillStyle = 'rgba(22, 33, 62, 0.9)';
+    context.strokeStyle = '#a7c5eb';
+    context.lineWidth = 1.5;
+    context.beginPath();
+    context.roundRect(x, y, placeholderSize, placeholderSize, 6);
+    context.fill();
+    context.stroke();
+
+    context.fillStyle = 'white';
+    context.font = `bold 24px "Roboto"`;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('+', x + placeholderSize / 2, y + placeholderSize / 2 + 1);
+    context.restore();
+
+    currentFrameHitboxes.push({ id, rect: { x, y, width: placeholderSize, height: placeholderSize }, type: 'toggle-visibility' });
+};
+
 const drawTextWithBackground = (
     context: CanvasRenderingContext2D,
     text: string,
@@ -739,46 +771,115 @@ const drawTextWithBackground = (
     textAlign: CanvasTextAlign = 'center',
     id?: string
 ) => {
-    let finalX = x;
-    let finalY = y;
-    if (id) {
-        const offset = annotationOffsets.get(id) || { x: 0, y: 0 };
-        finalX += offset.x;
-        finalY += offset.y;
+    // 1. Get annotation state & visibility
+    const annotation = id ? (annotations.get(id) || { offset: { x: 0, y: 0 } }) : { offset: { x: 0, y: 0 } };
+    const offset = annotation.offset;
+    const isVisible = id ? (annotationVisibility.get(id) ?? true) : true;
+
+    // 2. Calculate natural metrics to determine position for placeholder if needed
+    const baseFontSize = 14;
+    const baseHpadding = 15;
+    const baseVpadding = 12;
+    context.font = `bold ${baseFontSize}px "Roboto", sans-serif`;
+    const textMetrics = context.measureText(text);
+    const textHeight = (textMetrics.actualBoundingBoxAscent || 14) + (textMetrics.actualBoundingBoxDescent || 2);
+    const naturalWidth = textMetrics.width + baseHpadding * 2;
+    const naturalHeight = textHeight + baseVpadding * 2;
+    const naturalAspectRatio = naturalHeight > 0 ? naturalWidth / naturalHeight : 1;
+
+    // 3. Handle visibility
+    if (id && !isVisible) {
+        let placeholderX = x + offset.x;
+        const placeholderY = y + offset.y - naturalHeight / 2;
+        if (textAlign === 'left') {
+             // placeholderX is already correct
+        } else if (textAlign === 'right') {
+            placeholderX -= naturalWidth;
+        } else { // center
+            placeholderX -= naturalWidth / 2;
+        }
+        drawPlaceholder(context, id, placeholderX, placeholderY);
+        return { x: 0, y: 0, width: 0, height: 0 };
     }
 
-    context.font = 'bold 14px "Roboto", sans-serif';
+    // --- If visible, draw the full box ---
+    let finalX = x + offset.x;
+    let finalY = y + offset.y;
+    
+    const finalWidth = annotation.size?.width || naturalWidth;
+    const finalHeight = finalWidth / naturalAspectRatio;
+    const scale = finalWidth / naturalWidth;
+
+    const finalFontSize = baseFontSize * scale;
+    const hPadding = baseHpadding * scale;
+
+    context.font = `bold ${finalFontSize.toFixed(2)}px "Roboto", sans-serif`;
     context.textAlign = textAlign;
     context.textBaseline = 'middle';
-
-    const textMetrics = context.measureText(text);
-    const hPadding = 15; // Increased horizontal padding
-    const vPadding = 12; // Increased vertical padding
-    const textHeight = (textMetrics.actualBoundingBoxAscent || 14) + (textMetrics.actualBoundingBoxDescent || 2);
-    const rectHeight = textHeight + vPadding * 2;
-    const rectWidth = textMetrics.width + hPadding * 2;
     
     let rectX;
-    if (textAlign === 'left') rectX = finalX - hPadding;
-    else if (textAlign === 'right') rectX = finalX - rectWidth + hPadding;
-    else rectX = finalX - rectWidth / 2;
+    if (textAlign === 'left') rectX = finalX;
+    else if (textAlign === 'right') rectX = finalX - finalWidth + hPadding * 2;
+    else rectX = finalX - finalWidth / 2;
     
-    const rectY = finalY - rectHeight / 2;
+    const rectY = finalY - finalHeight / 2;
 
     context.fillStyle = 'rgba(22, 33, 62, 0.85)';
-    context.strokeStyle = '#e94560'; // Red border for consistency
+    context.strokeStyle = '#e94560';
     context.lineWidth = 1;
     context.beginPath();
-    context.roundRect(rectX, rectY, rectWidth, rectHeight, 6);
+    context.roundRect(rectX, rectY, finalWidth, finalHeight, 6 * scale);
     context.fill();
     context.stroke();
     
     context.fillStyle = 'white';
-    context.fillText(text, finalX, finalY);
+    let textRenderX = finalX;
+    if (textAlign === 'left') textRenderX = finalX + hPadding;
+    if (textAlign === 'right') textRenderX = finalX - hPadding;
+    context.fillText(text, textRenderX, finalY);
     
-    const hitbox = { x: rectX, y: rectY, width: rectWidth, height: rectHeight };
+    // Draw resize handle
+    const handleSize = 12 * Math.min(1.5, scale);
+    const handleX = rectX + finalWidth;
+    const handleY = rectY + finalHeight;
+    context.save();
+    context.fillStyle = '#e94560';
+    context.strokeStyle = 'white';
+    context.lineWidth = 1.5;
+    context.beginPath();
+    context.rect(handleX - handleSize, handleY - handleSize, handleSize, handleSize);
+    context.fill();
+    context.stroke();
+    context.restore();
+
+    // Draw close button
+    const closeButtonSize = 18 * scale;
+    const closeButtonPadding = 4 * scale;
+    const closeButtonX = rectX + finalWidth - closeButtonPadding - (closeButtonSize / 2);
+    const closeButtonY = rectY + closeButtonPadding + (closeButtonSize / 2);
+    context.save();
+    context.beginPath();
+    context.arc(closeButtonX, closeButtonY, closeButtonSize / 2, 0, Math.PI * 2);
+    context.fillStyle = 'rgba(255, 255, 255, 0.15)';
+    context.fill();
+    context.strokeStyle = 'white';
+    context.lineWidth = 1.5 * scale;
+    const xOffset = closeButtonSize * 0.25;
+    context.beginPath();
+    context.moveTo(closeButtonX - xOffset, closeButtonY - xOffset);
+    context.lineTo(closeButtonX + xOffset, closeButtonY + xOffset);
+    context.moveTo(closeButtonX + xOffset, closeButtonY - xOffset);
+    context.lineTo(closeButtonX - xOffset, closeButtonY + xOffset);
+    context.stroke();
+    context.restore();
+    
+    const hitbox = { x: rectX, y: rectY, width: finalWidth, height: finalHeight };
     if (id) {
-        currentFrameHitboxes.push({ id, rect: hitbox });
+        const closeHitbox = { x: closeButtonX - closeButtonSize/2, y: closeButtonY - closeButtonSize/2, width: closeButtonSize, height: closeButtonSize };
+        const handleHitbox = { x: handleX - handleSize - 2, y: handleY - handleSize - 2, width: handleSize + 4, height: handleSize + 4 };
+        currentFrameHitboxes.push({ id, rect: hitbox, type: 'drag' });
+        currentFrameHitboxes.push({ id, rect: handleHitbox, type: 'resize' });
+        currentFrameHitboxes.push({ id, rect: closeHitbox, type: 'toggle-visibility' });
     }
     return hitbox;
 };
@@ -803,38 +904,6 @@ const drawArrow = (context: CanvasRenderingContext2D, fromX: number, fromY: numb
     context.stroke();
 };
 
-const drawFormattedText = (context: CanvasRenderingContext2D, lines: string[], startX: number, startY: number, lineHeight: number) => {
-    context.textBaseline = 'top';
-    let currentY = startY;
-    const regularFont = '12px "Roboto", sans-serif';
-    const boldFont = 'bold 12px "Roboto", sans-serif';
-
-    lines.forEach(line => {
-        // Split the line by <b> and </b> tags, keeping the delimiters
-        const parts = line.split(/(<b>|<\/b>)/).filter(p => p);
-        let currentX = startX;
-        let isBold = false;
-
-        parts.forEach(part => {
-            if (part === '<b>') {
-                isBold = true;
-                return; // Continue to next part
-            }
-            if (part === '</b>') {
-                isBold = false;
-                return; // Continue to next part
-            }
-
-            context.font = isBold ? boldFont : regularFont;
-            context.fillStyle = 'white';
-            context.fillText(part, currentX, currentY);
-            currentX += context.measureText(part).width;
-        });
-
-        currentY += lineHeight;
-    });
-}
-
 const drawInfoBox = (
     context: CanvasRenderingContext2D,
     title: string,
@@ -843,28 +912,26 @@ const drawInfoBox = (
     id?: string,
     coords?: { x: number; y: number }
 ) => {
-    let offsetX = 0;
-    let offsetY = 0;
-    let easeOffset = (1 - easeOutProgress) * -50;
+    if (!id) return { x: 0, y: 0, width: 0, height: 0 };
 
-    if (id) {
-        const offset = annotationOffsets.get(id) || { x: 0, y: 0 };
-        offsetX = offset.x;
-        offsetY = offset.y;
-        if (annotationOffsets.has(id)) {
-            easeOffset = 0;
-        }
-    }
+    // 1. Get annotation state & visibility
+    const annotation = annotations.get(id) || { offset: { x: 0, y: 0 } };
+    const offsetX = annotation.offset.x;
+    const offsetY = annotation.offset.y;
+    const isVisible = annotationVisibility.get(id) ?? true;
 
-    const lineHeight = 18;
-    const padding = 15;
-    const titleHeight = 22;
-
-    let maxWidth = 0;
-    const regularFont = '12px "Roboto", sans-serif';
-    const boldFont = 'bold 12px "Roboto", sans-serif';
-    context.font = 'bold 13px "Roboto", sans-serif';
-    maxWidth = Math.max(maxWidth, context.measureText(title).width);
+    // --- Calculate Natural Metrics (needed for both states) ---
+    const baseLineHeight = 18;
+    const basePadding = 15;
+    const baseTitleHeight = 22;
+    const baseRegularFontSize = 12;
+    const baseBoldFontSize = 12;
+    const baseTitleFontSize = 13;
+    let naturalMaxWidth = 0;
+    const regularFont = `${baseRegularFontSize}px "Roboto", sans-serif`;
+    const boldFont = `bold ${baseBoldFontSize}px "Roboto", sans-serif`;
+    context.font = `bold ${baseTitleFontSize}px "Roboto", sans-serif`;
+    naturalMaxWidth = Math.max(naturalMaxWidth, context.measureText(title).width);
     lines.forEach(line => {
         const parts = line.split(/(<b>|<\/b>)/).filter(p => p);
         let currentLineWidth = 0;
@@ -875,45 +942,123 @@ const drawInfoBox = (
             context.font = isBold ? boldFont : regularFont;
             currentLineWidth += context.measureText(part).width;
         });
-        maxWidth = Math.max(maxWidth, currentLineWidth);
+        naturalMaxWidth = Math.max(naturalMaxWidth, currentLineWidth);
     });
-    const boxWidth = maxWidth + padding * 2;
-    const boxHeight = padding * 2 + titleHeight + (lines.length * lineHeight);
+    const naturalWidth = naturalMaxWidth + basePadding * 2;
+    const naturalHeight = basePadding * 2 + baseTitleHeight + (lines.length * baseLineHeight);
+    const naturalAspectRatio = naturalHeight > 0 ? naturalWidth / naturalHeight : 1;
 
-    let boxX, boxY;
+    // --- Determine Base Position ---
+    let baseX, baseY;
     if (coords) {
-        // Use provided coordinates as the top-left corner, applying ease-in if not dragged
-        boxX = coords.x + (annotationOffsets.has(id || '') ? 0 : easeOffset);
-        boxY = coords.y;
+        baseX = coords.x;
+        baseY = coords.y;
     } else {
-        // Default to bottom-left if no coords are provided
-        boxX = 15 + easeOffset;
-        boxY = context.canvas.clientHeight - boxHeight - 15;
+        baseX = 15;
+        baseY = context.canvas.clientHeight - naturalHeight - 15;
     }
 
-    const finalX = boxX + offsetX;
-    const finalY = boxY + offsetY;
+    // --- Handle Visibility ---
+    if (!isVisible) {
+        drawPlaceholder(context, id, baseX + offsetX, baseY + offsetY);
+        return { x: 0, y: 0, width: 0, height: 0 };
+    }
+
+    // --- If Visible, Draw Full Box ---
+    let easeOffset = (1 - easeOutProgress) * -50;
+    if (annotations.has(id) && (annotation.offset.x !== 0 || annotation.offset.y !== 0 || annotation.size)) {
+        easeOffset = 0;
+    }
+    baseX += easeOffset;
+
+    const finalWidth = annotation.size?.width || naturalWidth;
+    const finalHeight = finalWidth / naturalAspectRatio;
+    const scale = finalWidth / naturalWidth;
+    
+    const lineHeight = baseLineHeight * scale;
+    const padding = basePadding * scale;
+    const titleHeight = baseTitleHeight * scale;
+    const regularFontSize = baseRegularFontSize * scale;
+    const boldFontSize = baseBoldFontSize * scale;
+    const titleFontSize = baseTitleFontSize * scale;
+
+    const finalRectX = baseX + offsetX;
+    const finalRectY = baseY + offsetY;
 
     context.fillStyle = 'rgba(22, 33, 62, 0.85)';
     context.strokeStyle = '#e94560';
     context.lineWidth = 1;
     context.beginPath();
-    context.roundRect(finalX, finalY, boxWidth, boxHeight, 8);
+    context.roundRect(finalRectX, finalRectY, finalWidth, finalHeight, 8 * scale);
     context.fill();
     context.stroke();
 
+    const contentX = finalRectX;
+    const contentY = finalRectY;
+    
     context.fillStyle = '#e94560';
-    context.font = 'bold 13px "Roboto", sans-serif';
+    context.font = `bold ${titleFontSize.toFixed(2)}px "Roboto", sans-serif`;
     context.textAlign = 'left';
     context.textBaseline = 'top';
-    context.fillText(title, finalX + padding, finalY + padding);
+    context.fillText(title, contentX + padding, contentY + padding);
     
-    drawFormattedText(context, lines, finalX + padding, finalY + padding + titleHeight, lineHeight);
+    let currentY = contentY + padding + titleHeight;
+    const scaledRegularFont = `${regularFontSize.toFixed(2)}px "Roboto", sans-serif`;
+    const scaledBoldFont = `bold ${boldFontSize.toFixed(2)}px "Roboto", sans-serif`;
+    lines.forEach(line => {
+        const parts = line.split(/(<b>|<\/b>)/).filter(p => p);
+        let currentX = contentX + padding;
+        let isBold = false;
+        parts.forEach(part => {
+            if (part === '<b>') { isBold = true; return; }
+            if (part === '</b>') { isBold = false; return; }
+            context.font = isBold ? scaledBoldFont : scaledRegularFont;
+            context.fillStyle = 'white';
+            context.fillText(part, currentX, currentY);
+            currentX += context.measureText(part).width;
+        });
+        currentY += lineHeight;
+    });
 
-    const hitbox = { x: finalX, y: finalY, width: boxWidth, height: boxHeight };
-    if (id) {
-        currentFrameHitboxes.push({ id, rect: hitbox });
-    }
+    const handleSize = 12 * Math.min(1.5, scale);
+    const handleX = finalRectX + finalWidth;
+    const handleY = finalRectY + finalHeight;
+    context.save();
+    context.fillStyle = '#e94560';
+    context.strokeStyle = 'white';
+    context.lineWidth = 1.5;
+    context.beginPath();
+    context.rect(handleX - handleSize, handleY - handleSize, handleSize, handleSize);
+    context.fill();
+    context.stroke();
+    context.restore();
+
+    const closeButtonSize = 20 * scale;
+    const closeButtonPadding = 5 * scale;
+    const closeButtonX = finalRectX + finalWidth - closeButtonPadding - (closeButtonSize / 2);
+    const closeButtonY = finalRectY + closeButtonPadding + (closeButtonSize / 2);
+    context.save();
+    context.beginPath();
+    context.arc(closeButtonX, closeButtonY, closeButtonSize / 2, 0, Math.PI * 2);
+    context.fillStyle = 'rgba(255, 255, 255, 0.15)';
+    context.fill();
+    context.strokeStyle = 'white';
+    context.lineWidth = 1.5 * scale;
+    const xOffset = closeButtonSize * 0.25;
+    context.beginPath();
+    context.moveTo(closeButtonX - xOffset, closeButtonY - xOffset);
+    context.lineTo(closeButtonX + xOffset, closeButtonY + xOffset);
+    context.moveTo(closeButtonX + xOffset, closeButtonY - xOffset);
+    context.lineTo(closeButtonX - xOffset, closeButtonY + xOffset);
+    context.stroke();
+    context.restore();
+
+    const hitbox = { x: finalRectX, y: finalRectY, width: finalWidth, height: finalHeight };
+    const handleHitbox = { x: handleX - handleSize - 2, y: handleY - handleSize - 2, width: handleSize + 4, height: handleSize + 4 };
+    const closeHitbox = { x: closeButtonX - closeButtonSize/2, y: closeButtonY - closeButtonSize/2, width: closeButtonSize, height: closeButtonSize };
+    currentFrameHitboxes.push({ id, rect: hitbox, type: 'drag' });
+    currentFrameHitboxes.push({ id, rect: handleHitbox, type: 'resize' });
+    currentFrameHitboxes.push({ id, rect: closeHitbox, type: 'toggle-visibility' });
     return hitbox;
 };
 
@@ -925,79 +1070,110 @@ const drawConditionGauge = (
     roughnessHeight: number,
     id: string
 ) => {
-    let offsetX = 0;
-    let offsetY = 0;
-    const offset = annotationOffsets.get(id) || { x: 0, y: 0 };
-    offsetX = offset.x;
-    offsetY = offset.y;
+    // 1. Get annotation state & visibility
+    const annotation = annotations.get(id) || { offset: { x: 0, y: 0 } };
+    const offsetX = annotation.offset.x;
+    const offsetY = annotation.offset.y;
+    const isVisible = annotationVisibility.get(id) ?? true;
 
-    const boxWidth = 200;
-    const boxHeight = 180;
+    // 2. Natural metrics & Base Position
+    const naturalWidth = 200;
+    const naturalHeight = 180;
     const margin = 20;
-    const boxX = context.canvas.clientWidth - boxWidth - margin;
-    const boxY = margin + 50; // Position below the friction driver label
+    const naturalAspectRatio = naturalWidth / naturalHeight;
+    const baseX = context.canvas.clientWidth - naturalWidth - margin;
+    const baseY = margin + 50;
 
-    const finalX = boxX + offsetX;
-    const finalY = boxY + offsetY;
+    // 3. Handle visibility
+    if (!isVisible) {
+        drawPlaceholder(context, id, baseX + offsetX, baseY + offsetY);
+        return;
+    }
 
-    // Draw container
+    // --- If Visible, Draw Full Box ---
+    const finalWidth = annotation.size?.width || naturalWidth;
+    const finalHeight = finalWidth / naturalAspectRatio;
+    const scale = finalWidth / naturalWidth;
+    
+    const finalRectX = baseX + offsetX;
+    const finalRectY = baseY + offsetY;
+
     context.save();
     context.fillStyle = 'rgba(22, 33, 62, 0.9)';
     context.strokeStyle = '#a7c5eb'; // Blueish border
-    context.lineWidth = 1;
+    context.lineWidth = 1; // Keep line width constant for clean look
     context.beginPath();
-    context.roundRect(finalX, finalY, boxWidth, boxHeight, 8);
+    context.roundRect(finalRectX, finalRectY, finalWidth, finalHeight, 8 * scale);
     context.fill();
     context.stroke();
 
-    // Title
+    const contentX = finalRectX;
+    const contentY = finalRectY;
+    
     context.fillStyle = 'white';
-    context.font = 'bold 13px "Roboto", sans-serif';
+    context.font = `bold ${13 * scale}px "Roboto", sans-serif`;
     context.textAlign = 'center';
     context.textBaseline = 'top';
-    context.fillText('Flow Condition Gauge', finalX + boxWidth / 2, finalY + 10);
+    context.fillText('Flow Condition Gauge', contentX + finalWidth / 2, contentY + 10 * scale);
 
-    // Bars
-    const barAreaY = finalY + 40;
-    const barAreaHeight = 80;
-    const barWidth = 40;
-    
-    const maxVal = Math.max(sublayerThickness, roughnessHeight, 1); // Avoid division by zero
-    
+    const barAreaY = contentY + 40 * scale;
+    const barAreaHeight = 80 * scale;
+    const barWidth = 40 * scale;
+    const maxVal = Math.max(sublayerThickness, roughnessHeight, 1);
     const sublayerBarHeight = (sublayerThickness / maxVal) * barAreaHeight;
     const roughnessBarHeight = (roughnessHeight / maxVal) * barAreaHeight;
+    const sublayerBarX = contentX + finalWidth / 2 - barWidth - 15 * scale;
+    const roughnessBarX = contentX + finalWidth / 2 + 15 * scale;
 
-    const sublayerBarX = finalX + boxWidth / 2 - barWidth - 15;
-    const roughnessBarX = finalX + boxWidth / 2 + 15;
-
-    // Sublayer Bar
     context.fillStyle = 'rgba(74, 144, 226, 0.8)';
     context.fillRect(sublayerBarX, barAreaY + barAreaHeight - sublayerBarHeight, barWidth, sublayerBarHeight);
-    
-    // Roughness Bar
     context.fillStyle = 'rgba(200, 200, 200, 0.8)';
     context.fillRect(roughnessBarX, barAreaY + barAreaHeight - roughnessBarHeight, barWidth, roughnessBarHeight);
 
-    // Labels for bars
     context.fillStyle = 'white';
-    context.font = '11px "Roboto", sans-serif';
-    context.fillText("Viscous", sublayerBarX + barWidth / 2, barAreaY + barAreaHeight + 8);
-    context.fillText("Sublayer (δ')", sublayerBarX + barWidth / 2, barAreaY + barAreaHeight + 20);
-    
-    context.fillText("Roughness", roughnessBarX + barWidth / 2, barAreaY + barAreaHeight + 8);
-    context.fillText("Height (ε)", roughnessBarX + barWidth / 2, barAreaY + barAreaHeight + 20);
+    context.font = `${11 * scale}px "Roboto", sans-serif`;
+    context.fillText("Viscous", sublayerBarX + barWidth / 2, barAreaY + barAreaHeight + 8 * scale);
+    context.fillText("Sublayer (δ')", sublayerBarX + barWidth / 2, barAreaY + barAreaHeight + 20 * scale);
+    context.fillText("Roughness", roughnessBarX + barWidth / 2, barAreaY + barAreaHeight + 8 * scale);
+    context.fillText("Height (ε)", roughnessBarX + barWidth / 2, barAreaY + barAreaHeight + 20 * scale);
 
-    // Status Text
     const isSmooth = sublayerThickness > roughnessHeight;
     const statusText = isSmooth ? 'HYDRAULICALLY SMOOTH' : 'ROUGH FLOW';
-    context.font = 'bold 12px "Roboto", sans-serif';
+    context.font = `bold ${12 * scale}px "Roboto", sans-serif`;
     context.fillStyle = isSmooth ? '#4a90e2' : '#e94560';
-    context.fillText(statusText, finalX + boxWidth / 2, finalY + boxHeight - 22);
-
+    context.fillText(statusText, contentX + finalWidth / 2, contentY + finalHeight - 22 * scale);
     context.restore();
     
-    const hitbox = { x: finalX, y: finalY, width: boxWidth, height: boxHeight };
-    currentFrameHitboxes.push({ id, rect: hitbox });
+    const handleSize = 12 * Math.min(1.5, scale);
+    const handleX = finalRectX + finalWidth;
+    const handleY = finalRectY + finalHeight;
+    context.save();
+    context.fillStyle = '#e94560'; context.strokeStyle = 'white'; context.lineWidth = 1.5;
+    context.beginPath(); context.rect(handleX - handleSize, handleY - handleSize, handleSize, handleSize);
+    context.fill(); context.stroke();
+    context.restore();
+
+    const closeButtonSize = 20 * scale;
+    const closeButtonPadding = 5 * scale;
+    const closeButtonX = finalRectX + finalWidth - closeButtonPadding - (closeButtonSize / 2);
+    const closeButtonY = finalRectY + closeButtonPadding + (closeButtonSize / 2);
+    context.save();
+    context.beginPath(); context.arc(closeButtonX, closeButtonY, closeButtonSize/2, 0, Math.PI*2);
+    context.fillStyle = 'rgba(255,255,255,0.15)'; context.fill();
+    context.strokeStyle = 'white'; context.lineWidth = 1.5 * scale;
+    const xOffset = closeButtonSize * 0.25;
+    context.beginPath();
+    context.moveTo(closeButtonX - xOffset, closeButtonY - xOffset); context.lineTo(closeButtonX + xOffset, closeButtonY + xOffset);
+    context.moveTo(closeButtonX + xOffset, closeButtonY - xOffset); context.lineTo(closeButtonX - xOffset, closeButtonY + xOffset);
+    context.stroke();
+    context.restore();
+
+    const hitbox = { x: finalRectX, y: finalRectY, width: finalWidth, height: finalHeight };
+    const handleHitbox = { x: handleX - handleSize - 2, y: handleY - handleSize - 2, width: handleSize + 4, height: handleSize + 4 };
+    const closeHitbox = { x: closeButtonX - closeButtonSize/2, y: closeButtonY - closeButtonSize/2, width: closeButtonSize, height: closeButtonSize };
+    currentFrameHitboxes.push({ id, rect: hitbox, type: 'drag' });
+    currentFrameHitboxes.push({ id, rect: handleHitbox, type: 'resize' });
+    currentFrameHitboxes.push({ id, rect: closeHitbox, type: 'toggle-visibility' });
 };
 
 // New function for the Boundary Layer Profile in the Boundary View
@@ -1008,107 +1184,133 @@ const drawBoundaryProfile = (
     roughnessHeight: number,
     id: string
 ) => {
-    let offsetX = 0;
-    let offsetY = 0;
-    const offset = annotationOffsets.get(id) || { x: 0, y: 0 };
-    offsetX = offset.x;
-    offsetY = offset.y;
+    const annotation = annotations.get(id) || { offset: { x: 0, y: 0 } };
+    const offsetX = annotation.offset.x;
+    const offsetY = annotation.offset.y;
+    const isVisible = annotationVisibility.get(id) ?? true;
 
-    const boxWidth = 150;
-    const boxHeight = 220;
+    const naturalWidth = 150;
+    const naturalHeight = 220;
     const margin = 20;
-    const boxX = context.canvas.clientWidth - boxWidth - margin;
-    const boxY = margin;
+    const naturalAspectRatio = naturalWidth / naturalHeight;
+    const baseX = context.canvas.clientWidth - naturalWidth - margin;
+    const baseY = margin;
 
-    const finalX = boxX + offsetX;
-    const finalY = boxY + offsetY;
+    if (!isVisible) {
+        drawPlaceholder(context, id, baseX + offsetX, baseY + offsetY);
+        return;
+    }
 
-    // Draw container
+    const finalWidth = annotation.size?.width || naturalWidth;
+    const finalHeight = finalWidth / naturalAspectRatio;
+    const scale = finalWidth / naturalWidth;
+    
+    const finalRectX = baseX + offsetX;
+    const finalRectY = baseY + offsetY;
+
     context.save();
     context.fillStyle = 'rgba(22, 33, 62, 0.9)';
     context.strokeStyle = '#a7c5eb';
     context.lineWidth = 1;
     context.beginPath();
-    context.roundRect(finalX, finalY, boxWidth, boxHeight, 8);
+    context.roundRect(finalRectX, finalRectY, finalWidth, finalHeight, 8 * scale);
     context.fill();
     context.stroke();
 
-    // Title
+    const contentX = finalRectX;
+    const contentY = finalRectY;
+    
     context.fillStyle = 'white';
-    context.font = 'bold 13px "Roboto", sans-serif';
+    context.font = `bold ${13 * scale}px "Roboto", sans-serif`;
     context.textAlign = 'center';
     context.textBaseline = 'top';
-    context.fillText('Boundary Profile', finalX + boxWidth / 2, finalY + 10);
+    context.fillText('Boundary Profile', contentX + finalWidth / 2, contentY + 10 * scale);
     
-    // Scale and drawing area
-    const scaleX = finalX + 40;
-    const scaleY = finalY + 40;
-    const scaleHeight = boxHeight - 60;
-    const scaleWidth = 25;
-
-    // Maximum value for scaling is the boundary layer thickness
+    const scaleDrawX = contentX + 40 * scale;
+    const scaleDrawY = contentY + 40 * scale;
+    const scaleHeight = finalHeight - 60 * scale;
+    const scaleWidth = 25 * scale;
     const maxVal = Math.max(boundaryThickness, roughnessHeight, 1);
 
-    // Draw main boundary layer bar (δ)
     const boundaryBarHeight = (boundaryThickness / maxVal) * scaleHeight;
     context.fillStyle = 'rgba(233, 69, 96, 0.4)';
-    context.fillRect(scaleX, scaleY + scaleHeight - boundaryBarHeight, scaleWidth, boundaryBarHeight);
+    context.fillRect(scaleDrawX, scaleDrawY + scaleHeight - boundaryBarHeight, scaleWidth, boundaryBarHeight);
     
-    // Draw viscous sublayer bar (δ')
     const sublayerBarHeight = (sublayerThickness / maxVal) * scaleHeight;
     context.fillStyle = 'rgba(74, 144, 226, 0.8)';
-    context.fillRect(scaleX, scaleY + scaleHeight - sublayerBarHeight, scaleWidth, sublayerBarHeight);
+    context.fillRect(scaleDrawX, scaleDrawY + scaleHeight - sublayerBarHeight, scaleWidth, sublayerBarHeight);
     
-    // Draw roughness height marker (ε)
-    const roughnessMarkerY = scaleY + scaleHeight - ((roughnessHeight / maxVal) * scaleHeight);
-    if (roughnessHeight > 0 && roughnessMarkerY > scaleY && roughnessMarkerY < scaleY + scaleHeight) {
+    const roughnessMarkerY = scaleDrawY + scaleHeight - ((roughnessHeight / maxVal) * scaleHeight);
+    if (roughnessHeight > 0 && roughnessMarkerY > scaleDrawY && roughnessMarkerY < scaleDrawY + scaleHeight) {
         context.strokeStyle = 'white';
-        context.lineWidth = 2;
+        context.lineWidth = 2 * scale;
         context.beginPath();
-        context.moveTo(scaleX, roughnessMarkerY);
-        context.lineTo(scaleX + scaleWidth, roughnessMarkerY);
+        context.moveTo(scaleDrawX, roughnessMarkerY);
+        context.lineTo(scaleDrawX + scaleWidth, roughnessMarkerY);
         context.stroke();
     }
     
-    // Draw annotations/labels
-    context.font = '11px "Roboto", sans-serif';
+    context.font = `${11 * scale}px "Roboto", sans-serif`;
     context.fillStyle = 'white';
     context.textAlign = 'left';
     context.textBaseline = 'middle';
-    
-    const labelX = scaleX + scaleWidth + 10;
+    const labelX = scaleDrawX + scaleWidth + 10 * scale;
     context.strokeStyle = 'rgba(255,255,255,0.5)';
-    context.lineWidth = 1;
+    context.lineWidth = 1 * scale;
 
-    // δ label
-    const boundaryLabelY = scaleY + scaleHeight - boundaryBarHeight;
+    const boundaryLabelY = scaleDrawY + scaleHeight - boundaryBarHeight;
     context.fillText('Turbulent (δ)', labelX, boundaryLabelY);
     context.beginPath();
-    context.moveTo(labelX - 5, boundaryLabelY);
-    context.lineTo(scaleX + scaleWidth / 2, boundaryLabelY);
+    context.moveTo(labelX - 5 * scale, boundaryLabelY);
+    context.lineTo(scaleDrawX + scaleWidth / 2, boundaryLabelY);
     context.stroke();
 
-    // δ' label
-    const sublayerLabelY = scaleY + scaleHeight - sublayerBarHeight;
+    const sublayerLabelY = scaleDrawY + scaleHeight - sublayerBarHeight;
     context.fillText("Viscous (δ')", labelX, sublayerLabelY);
-     context.beginPath();
-    context.moveTo(labelX - 5, sublayerLabelY);
-    context.lineTo(scaleX + scaleWidth / 2, sublayerLabelY);
+    context.beginPath();
+    context.moveTo(labelX - 5 * scale, sublayerLabelY);
+    context.lineTo(scaleDrawX + scaleWidth / 2, sublayerLabelY);
     context.stroke();
     
-    // ε label
-    if (roughnessHeight > 0 && roughnessMarkerY > scaleY && roughnessMarkerY < scaleY + scaleHeight) {
+    if (roughnessHeight > 0 && roughnessMarkerY > scaleDrawY && roughnessMarkerY < scaleDrawY + scaleHeight) {
         context.fillText('Roughness (ε)', labelX, roughnessMarkerY);
         context.beginPath();
-        context.moveTo(labelX - 5, roughnessMarkerY);
-        context.lineTo(scaleX, roughnessMarkerY);
+        context.moveTo(labelX - 5 * scale, roughnessMarkerY);
+        context.lineTo(scaleDrawX, roughnessMarkerY);
         context.stroke();
     }
-    
+    context.restore();
+
+    const handleSize = 12 * Math.min(1.5, scale);
+    const handleX = finalRectX + finalWidth;
+    const handleY = finalRectY + finalHeight;
+    context.save();
+    context.fillStyle = '#e94560'; context.strokeStyle = 'white'; context.lineWidth = 1.5;
+    context.beginPath(); context.rect(handleX - handleSize, handleY - handleSize, handleSize, handleSize);
+    context.fill(); context.stroke();
+    context.restore();
+
+    const closeButtonSize = 20 * scale;
+    const closeButtonPadding = 5 * scale;
+    const closeButtonX = finalRectX + finalWidth - closeButtonPadding - (closeButtonSize / 2);
+    const closeButtonY = finalRectY + closeButtonPadding + (closeButtonSize / 2);
+    context.save();
+    context.beginPath(); context.arc(closeButtonX, closeButtonY, closeButtonSize/2, 0, Math.PI*2);
+    context.fillStyle = 'rgba(255,255,255,0.15)'; context.fill();
+    context.strokeStyle = 'white'; context.lineWidth = 1.5 * scale;
+    const xOffset = closeButtonSize * 0.25;
+    context.beginPath();
+    context.moveTo(closeButtonX - xOffset, closeButtonY - xOffset); context.lineTo(closeButtonX + xOffset, closeButtonY + xOffset);
+    context.moveTo(closeButtonX + xOffset, closeButtonY - xOffset); context.lineTo(closeButtonX - xOffset, closeButtonY + xOffset);
+    context.stroke();
     context.restore();
     
-    const hitbox = { x: finalX, y: finalY, width: boxWidth, height: boxHeight };
-    currentFrameHitboxes.push({ id, rect: hitbox });
+    const hitbox = { x: finalRectX, y: finalRectY, width: finalWidth, height: finalHeight };
+    const handleHitbox = { x: handleX - handleSize - 2, y: handleY - handleSize - 2, width: handleSize + 4, height: handleSize + 4 };
+    const closeHitbox = { x: closeButtonX - closeButtonSize/2, y: closeButtonY - closeButtonSize/2, width: closeButtonSize, height: closeButtonSize };
+    currentFrameHitboxes.push({ id, rect: hitbox, type: 'drag' });
+    currentFrameHitboxes.push({ id, rect: handleHitbox, type: 'resize' });
+    currentFrameHitboxes.push({ id, rect: closeHitbox, type: 'toggle-visibility' });
 };
 
 
@@ -1140,14 +1342,14 @@ function drawExplanationOverlay(
     context.lineWidth = 1.5;
 
     if (uiFlowState === 'laminar' || uiFlowState === 'transition') {
-        const text1 = drawTextWithBackground(context, 'Smooth, parallel layers', 100, 40, 'center', 'explain-laminar-1');
+        const text1 = drawTextWithBackground(context, 'Smooth, parallel layers', 100, 40, 'left', 'explain-laminar-1');
         drawArrow(context, text1.x + text1.width/2, text1.y + text1.height, 100, 85, progress);
 
         const text2 = drawTextWithBackground(context, 'Max Velocity at Center', centerX, centerY - 40, 'center', 'explain-laminar-2');
         drawArrow(context, text2.x + text2.width/2, text2.y + text2.height, centerX, centerY, progress);
 
         const text3 = drawTextWithBackground(context, 'Velocity ≈ 0 at Wall', width - 100, WALL_BUFFER + 25, 'center', 'explain-laminar-3');
-        drawArrow(context, text3.x + text3.width/2, text3.y + text3.height, width - 100, WALL_BUFFER + 5, progress);
+        drawArrow(context, text3.x + text3.width/2, text3.y, width - 100, WALL_BUFFER + 5, progress);
 
         drawInfoBox(context, 'Laminar Flow Impact', [
             '<b>Friction Driver:</b> Fluid Viscosity',
@@ -1180,7 +1382,7 @@ function drawExplanationOverlay(
         const boundaryLayerYTop = WALL_BUFFER + boundaryLayerThickness;
 
         if (physicsFlowState === 'fully-turbulent') {
-            const text3 = drawTextWithBackground(context, 'Thin Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
+            const text3 = drawTextWithBackground(context, 'Thin Boundary Layer', 100, boundaryLayerYTop + 20, 'left', 'explain-turb-3');
             drawArrow(context, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
             drawInfoBox(context, 'Complete Turbulence Impact', [
                 '<b>Friction Driver:</b> Pipe Roughness',
@@ -1191,7 +1393,7 @@ function drawExplanationOverlay(
                 '∙ Note: Darcy f_D = 4 x Fanning f'
             ], easeOutProgress, 'explain-fullyturb-infobox');
         } else { // Partially turbulent
-            const text3 = drawTextWithBackground(context, 'Thicker Boundary Layer', 100, boundaryLayerYTop + 20, 'center', 'explain-turb-3');
+            const text3 = drawTextWithBackground(context, 'Thicker Boundary Layer', 100, boundaryLayerYTop + 20, 'left', 'explain-turb-3');
             drawArrow(context, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
             drawInfoBox(context, 'Partial Turbulence Impact', [
                 '<b>Friction Driver:</b> Re & Roughness',
@@ -2025,7 +2227,7 @@ function startViewTransition(targetView: ViewMode) {
     transitionTargetView = targetView;
     isTransitioning = true;
     transitionStartTime = performance.now();
-    annotationOffsets.clear(); // Clear annotations on transition
+    annotations.clear(); // Clear position/size annotations, but not visibility
 
     // We DON'T change currentViewMode or initParticles yet.
     // That happens when the transition completes.
@@ -2189,25 +2391,35 @@ function initDragHandler() {
     };
 
     const handleDragStart = (clientX: number, clientY: number): boolean => {
-        // Allow dragging in detail views, OR in full view ONLY if explain is on.
         if (currentViewMode === 'full' && !showExplanation) {
             return false;
         }
-
         const { x: mouseX, y: mouseY } = getCanvasCoords(clientX, clientY);
 
-        // Check for hit on draggable items, iterating backwards for Z-index
         for (let i = currentFrameHitboxes.length - 1; i >= 0; i--) {
             const item = currentFrameHitboxes[i];
             const isHit = mouseX >= item.rect.x && mouseX <= item.rect.x + item.rect.width &&
                           mouseY >= item.rect.y && mouseY <= item.rect.y + item.rect.height;
 
             if (isHit) {
-                isDragging = true;
+                if (item.type === 'toggle-visibility') {
+                    const isVisible = annotationVisibility.get(item.id) ?? true;
+                    annotationVisibility.set(item.id, !isVisible);
+                    // Consume the click event but do not start a drag.
+                    isInteracting = false;
+                    draggedAnnotationId = null;
+                    return true;
+                }
+
+                isInteracting = true;
+                dragMode = item.type;
                 draggedAnnotationId = item.id;
                 dragStartPos = { x: mouseX, y: mouseY };
-                dragStartOffset = annotationOffsets.get(item.id) || { x: 0, y: 0 };
-                canvas.style.cursor = 'grabbing';
+
+                const currentAnnotation = annotations.get(item.id);
+                dragStartAnnotationState = currentAnnotation ? JSON.parse(JSON.stringify(currentAnnotation)) : { offset: { x: 0, y: 0 } };
+                
+                canvas.style.cursor = item.type === 'resize' ? 'se-resize' : 'grabbing';
                 return true;
             }
         }
@@ -2215,43 +2427,80 @@ function initDragHandler() {
     };
 
     const handleDragMove = (clientX: number, clientY: number) => {
-        if (!isDragging || !draggedAnnotationId) return;
+        if (!isInteracting || !draggedAnnotationId || !dragStartAnnotationState) return;
 
         const { x: mouseX, y: mouseY } = getCanvasCoords(clientX, clientY);
         const deltaX = mouseX - dragStartPos.x;
         const deltaY = mouseY - dragStartPos.y;
 
-        const newOffset = {
-            x: dragStartOffset.x + deltaX,
-            y: dragStartOffset.y + deltaY,
-        };
-        annotationOffsets.set(draggedAnnotationId, newOffset);
+        const annotation = annotations.get(draggedAnnotationId) || { offset: { x: 0, y: 0 } };
+
+        if (dragMode === 'drag') {
+            annotation.offset = {
+                x: dragStartAnnotationState.offset.x + deltaX,
+                y: dragStartAnnotationState.offset.y + deltaY,
+            };
+        } else if (dragMode === 'resize') {
+            const startRect = currentFrameHitboxes.find(h => h.id === draggedAnnotationId && h.type === 'drag')?.rect;
+            if (!startRect) return;
+            
+            const startWidth = dragStartAnnotationState.size?.width || startRect.width;
+            const startHeight = dragStartAnnotationState.size?.height || startRect.height;
+            
+            // Preserve aspect ratio to make resizing smooth and predictable.
+            const aspectRatio = startHeight > 0 ? startWidth / startHeight : 1;
+
+            // Determine the new size based on the larger of the horizontal or vertical drag distance.
+            // This makes the resize handle feel responsive in all directions.
+            let newWidth;
+            if (Math.abs(deltaX) > Math.abs(deltaY)) {
+                newWidth = startWidth + deltaX;
+            } else {
+                newWidth = (startHeight + deltaY) * aspectRatio;
+            }
+            
+            newWidth = Math.max(50, newWidth); // Prevent the box from becoming too small.
+            const newHeight = newWidth / aspectRatio;
+
+            annotation.size = { width: newWidth, height: newHeight };
+        }
+        
+        annotations.set(draggedAnnotationId, annotation);
     };
 
     const handleDragEnd = () => {
-        if (!isDragging) return;
-        isDragging = false;
+        if (!isInteracting) return;
+        isInteracting = false;
         draggedAnnotationId = null;
+        dragMode = null;
+        dragStartAnnotationState = null;
         canvas.style.cursor = 'default';
     };
 
     const handleHover = (clientX: number, clientY: number) => {
-        if (isDragging || (currentViewMode === 'full' && !showExplanation)) {
+        if (isInteracting || (currentViewMode === 'full' && !showExplanation)) {
              canvas.style.cursor = 'default';
              return;
         }
 
         const { x: mouseX, y: mouseY } = getCanvasCoords(clientX, clientY);
 
-        let hovering = false;
-        for (const item of currentFrameHitboxes) {
+        let cursor: 'grab' | 'se-resize' | 'pointer' | 'default' = 'default';
+        for (let i = currentFrameHitboxes.length - 1; i >= 0; i--) {
+            const item = currentFrameHitboxes[i];
             if (mouseX >= item.rect.x && mouseX <= item.rect.x + item.rect.width &&
                 mouseY >= item.rect.y && mouseY <= item.rect.y + item.rect.height) {
-                hovering = true;
+                if (item.type === 'toggle-visibility') {
+                    cursor = 'pointer';
+                } else if (item.type === 'resize') {
+                    cursor = 'se-resize';
+                } else {
+                    cursor = 'grab';
+                }
                 break;
             }
         }
-        canvas.style.cursor = hovering ? 'grab' : 'default';
+        canvas.style.cursor = cursor;
     };
 
     // --- Mouse Events ---
@@ -2262,7 +2511,7 @@ function initDragHandler() {
     });
 
     document.addEventListener('mousemove', (e: MouseEvent) => {
-        if (isDragging) {
+        if (isInteracting) {
             handleDragMove(e.clientX, e.clientY);
         }
     });
@@ -2270,7 +2519,9 @@ function initDragHandler() {
     document.addEventListener('mouseup', handleDragEnd);
 
     canvas.addEventListener('mousemove', (e: MouseEvent) => {
-        handleHover(e.clientX, e.clientY);
+        if (!isInteracting) {
+            handleHover(e.clientX, e.clientY);
+        }
     });
 
     // --- Touch Events ---
@@ -2278,17 +2529,15 @@ function initDragHandler() {
         if (e.touches.length === 1) {
             const touch = e.touches[0];
             if (handleDragStart(touch.clientX, touch.clientY)) {
-                // Prevent default to stop scrolling/zooming gestures.
                 e.preventDefault();
             }
         }
     }, { passive: false });
 
     document.addEventListener('touchmove', (e: TouchEvent) => {
-        if (isDragging && e.touches.length === 1) {
+        if (isInteracting && e.touches.length === 1) {
             const touch = e.touches[0];
             handleDragMove(touch.clientX, touch.clientY);
-            // Prevent scrolling while dragging.
             e.preventDefault();
         }
     }, { passive: false });
@@ -2453,7 +2702,7 @@ explainBtn.addEventListener('click', () => {
     explainBtn.classList.toggle('active', showExplanation);
     explainBtn.setAttribute('aria-checked', String(showExplanation));
     if (showExplanation) {
-        annotationOffsets.clear();
+        annotations.clear();
         explanationAnimationStartTimestamp = performance.now();
     } else {
         explanationAnimationStartTimestamp = null;
