@@ -1,3 +1,5 @@
+
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -19,6 +21,8 @@ interface FrictionResult {
     value: number;
     color: string;
 }
+type LabelCategory = 'infoBox' | 'layerLabels' | 'gauges' | 'contextual';
+
 
 // --- DOM Element Selection ---
 const appContainer = document.getElementById('app') as HTMLDivElement;
@@ -27,6 +31,9 @@ const ctx = canvas.getContext('2d')!;
 const velocityCanvas = document.getElementById('velocityProfileCanvas') as HTMLCanvasElement;
 const vCtx = velocityCanvas.getContext('2d')!;
 const explainBtn = document.getElementById('explain-btn') as HTMLButtonElement;
+const labelsControlContainer = document.getElementById('labels-control-container') as HTMLDivElement;
+const labelsControlBtn = document.getElementById('labels-control-btn') as HTMLButtonElement;
+const labelsDropdown = document.getElementById('labels-dropdown') as HTMLDivElement;
 const boundaryDetailBtn = document.getElementById('boundaryDetailBtn') as HTMLButtonElement;
 const pipeWallDetailBtn = document.getElementById('pipeWallDetailBtn') as HTMLButtonElement;
 
@@ -41,7 +48,7 @@ const reynoldsSlider = document.getElementById('reynolds-slider') as HTMLInputEl
 const reynoldsInput = document.getElementById('reynolds-input') as HTMLInputElement;
 
 const pipeDiameterSelect = document.getElementById('pipe-diameter-select') as HTMLSelectElement;
-const pipeDiameterValue = document.getElementById('pipe-diameter-value') as HTMLSpanElement;
+const pipeDiameterInput = document.getElementById('pipe-diameter-input') as HTMLInputElement;
 const absRoughnessSlider = document.getElementById('abs-roughness-slider') as HTMLInputElement;
 const absRoughnessInput = document.getElementById('abs-roughness-input') as HTMLInputElement;
 const relRoughnessInput = document.getElementById('rel-roughness-input') as HTMLInputElement;
@@ -104,12 +111,48 @@ const PIPE_SCHEDULE_40_IDS_IN = new Map([
   ['12"', 11.938], ['14"', 13.124], ['16"', 15.000], ['18"', 16.876], ['20"', 18.812], ['24"', 22.624],
 ]);
 
+const labelCategories: Record<LabelCategory, string> = {
+    infoBox: 'Info Boxes',
+    layerLabels: 'Layer Labels',
+    gauges: 'Gauges & Meters',
+    contextual: 'Contextual Notes'
+};
+const annotationToCategoryMap: Record<string, LabelCategory> = {
+    'boundary-infobox': 'infoBox',
+    'wall-infobox': 'infoBox',
+    'boundary-boundary-label': 'layerLabels',
+    'boundary-sublayer-label': 'layerLabels',
+    'wall-boundary-label': 'layerLabels',
+    'wall-sublayer-label': 'layerLabels',
+    'boundary-profile-gauge': 'gauges',
+    'wall-condition-gauge': 'gauges',
+    'boundary-text-1': 'contextual',
+    'wall-peak-label': 'contextual',
+    'wall-friction-driver': 'contextual',
+    // Full view annotations
+    'explain-laminar-1': 'contextual',
+    'explain-laminar-2': 'contextual',
+    'explain-laminar-3': 'contextual',
+    'explain-turb-1': 'contextual',
+    'explain-turb-2': 'contextual',
+    'explain-turb-3': 'contextual',
+    'explain-laminar-infobox': 'infoBox',
+    'explain-fullyturb-infobox': 'infoBox',
+    'explain-partturb-infobox': 'infoBox'
+};
+
 let particles: Particle[] = [];
 let animationFrameId: number;
 let currentProfile: number[] = [];
 let showExplanation = false;
 let explanationAnimationStartTimestamp: number | null = null;
 let roughnessProfile: number[] = [];
+let labelCategoryVisibility: Record<LabelCategory, boolean> = {
+    infoBox: true,
+    layerLabels: true,
+    gauges: true,
+    contextual: true,
+};
 
 // --- Dynamic State ---
 let currentViewMode: ViewMode = 'full';
@@ -461,50 +504,64 @@ function updateParticleInFullView(p: Particle, re: number, f: number) {
     }
     
     if (p.x > canvas.clientWidth + p.radius) {
-        p.x = -p.radius;
+        p.x = -p.radius - Math.random() * 40;
         p.y = Math.random() * canvas.clientHeight;
     }
     p.color = getColorForVelocity(p.vx, 12);
 }
 
-function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: number, sublayerTopY: number) {
+function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: number, sublayerTopY: number, boundaryLayerTopY: number) {
     const wallBaseY = canvas.clientHeight * 0.9;
     const roughnessXIndex = Math.max(0, Math.min(Math.floor(p.x), roughnessProfile.length - 1));
     const physicalWallY = wallBaseY - (roughnessProfile[roughnessXIndex] || 0) * roughnessHeight;
 
-    // Base velocity in the free stream
-    let baseVx = mapLog(re, 2301, RE_MAX, 4, 20); // Increased max speed for more pronounced effect
-    let turbulenceFactor = Math.max(0, Math.log10(re / 2000)) * 2;
+    const maxVx = mapLog(re, 2301, RE_MAX, 4, 20);
+    const turbulenceFactor = Math.max(0, Math.log10(re / 2000)) * 2;
 
-    p.vy += (Math.random() - 0.5) * turbulenceFactor * 0.2; // Gravity/settling effect
-    p.vx = baseVx + (Math.random() - 0.5) * turbulenceFactor;
-
-    if (p.y > sublayerTopY) { // Inside viscous sublayer
-        const depthRatio = (p.y - sublayerTopY) / (wallBaseY - sublayerTopY);
-        p.vx *= (1 - depthRatio * 0.9); // Slow down significantly near wall
-        p.vy *= 0.5; // Dampen vertical motion
-    }
+    // Model velocity based on current distance from the wall. All particles now use this logic.
+    const boundaryLayerThickness = wallBaseY - boundaryLayerTopY;
+    const distFromWall = Math.max(0, wallBaseY - p.y);
+    const depthRatio = boundaryLayerThickness > 0 ? Math.min(1, distFromWall / boundaryLayerThickness) : 1;
+    const velocityFactor = Math.pow(depthRatio, 1 / 7);
+    p.vx = maxVx * velocityFactor;
+    p.vy = (Math.random() - 0.5) * turbulenceFactor * (2.0 - velocityFactor * 1.5);
 
     p.x += p.vx;
     p.y += p.vy;
 
-    // Collision with the physical wall surface
-    if (p.y + p.radius > physicalWallY) {
-        p.y = physicalWallY - p.radius;
+    // --- Boundary Collision ---
+    if (p.y + p.radius > physicalWallY) { // Wall collision check first
+        p.y = physicalWallY - p.radius; // Snap to wall surface
+        
+        // A peak is exposed if the wall surface is higher (smaller Y) than the sublayer's top line
+        const isPeakExposed = physicalWallY < sublayerTopY;
 
-        // Always use the "radical" collision to show form drag and eddies
-        p.vy = -(Math.random() * 3 + 2); // Strong, random upward kick
-        p.vx += (Math.random() - 0.5) * 6;   // Strong random sideways kick
-        p.flashFrames = 8; // Flash for 8 frames to visualize the 'radical' collision
+        if (isPeakExposed) {
+            // VIOLENTLY Exaggerated collision for exposed roughness peaks
+            p.vy = -(Math.random() * 18 + 15);   // MUCH Stronger, more chaotic upward kick
+            p.vx += (Math.random() - 0.5) * 30;  // MUCH Stronger sideways kick
+            p.flashFrames = 45;                  // MUCH Longer, brighter flash
+        } else {
+            // Damped collision for submerged roughness (or flat wall)
+            p.vy = -(Math.random() * 2 + 1);    // Gentle upward kick
+            p.vx += (Math.random() - 0.5) * 4;   // Gentle sideways kick
+            p.flashFrames = 6;
+        }
+    } else if (p.y + p.radius > sublayerTopY) {
+        // If no wall collision, check for collision with the viscous sublayer top boundary.
+        // This acts as a soft barrier where the wall is lower.
+        p.y = sublayerTopY - p.radius;
+        p.vy *= -0.3; // Dampened bounce to keep it out of the main turbulent zone
     }
     
-    // Reset particle
+    // Reset particle logic
     if (p.x > canvas.clientWidth + p.radius) {
-        p.x = -p.radius;
-        p.y = Math.random() * (canvas.clientHeight * 0.7);
+        p.x = -p.radius - Math.random() * 40;
+        p.y = Math.random() * (wallBaseY - 5);
     }
-    if (p.y < -p.radius) { // If it flies off the top
-        p.y = 0;
+    if (p.y < -p.radius) {
+        p.x = -p.radius - Math.random() * 40;
+        p.y = Math.random() * (wallBaseY - 5);
     }
 
     // Set color, with flash effect
@@ -516,70 +573,71 @@ function updateParticleInDetailView(p: Particle, re: number, roughnessHeight: nu
     }
 }
 
-function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight: number, sublayerTopY: number) {
+function updateParticleInWallDetailView(p: Particle, re: number, roughnessHeight: number, sublayerTopY: number, boundaryLayerTopY: number) {
     const wallBaseY = canvas.clientHeight * 0.85;
 
-    // Normalize the roughness profile so its values span from 0 to 1 exactly.
-    // This ensures consistency between physics and visuals.
-    let minProfile = 1.0;
-    let maxProfile = 0.0;
-    if (roughnessProfile.length > 0) {
-        for (const val of roughnessProfile) {
-            if (val < minProfile) minProfile = val;
-            if (val > maxProfile) maxProfile = val;
-        }
-    }
+    // Physical wall calculation
+    let minProfile = 1.0, maxProfile = 0.0;
+    if (roughnessProfile.length > 0) { for (const val of roughnessProfile) { if (val < minProfile) minProfile = val; if (val > maxProfile) maxProfile = val; } }
     const profileRange = (maxProfile - minProfile) > 0 ? (maxProfile - minProfile) : 1;
-
-    // Ensure index is within bounds, handling wrapping
     const roughnessXIndex = Math.floor(p.x + canvas.clientWidth) % canvas.clientWidth;
     const normalizedProfileValue = ((roughnessProfile[roughnessXIndex] || 0) - minProfile) / profileRange;
     const physicalWallY = wallBaseY - normalizedProfileValue * roughnessHeight;
 
-    // Make particle velocity scale with Reynolds number for a more dynamic feel.
-    const baseVx = mapLog(re, 2301, RE_MAX, 2, 9); // Scale base horizontal speed from 2 to 9
-    const turbulenceFactor = Math.max(0, Math.log10(re / 2000)) * 2.0; // Scale turbulence effect
-
-    // 1. Update velocities based on current position
-    if (p.y > sublayerTopY) { // Inside sublayer or between peaks - chaotic motion
-        // Less directional, more random swirling, influenced by turbulence factor
-        p.vx += (Math.random() - 0.5) * turbulenceFactor * 0.6 - (p.vx * 0.1);
-        p.vy += (Math.random() - 0.5) * turbulenceFactor * 0.6 - (p.vy * 0.1);
-    } else { // Free stream above the sublayer
-        p.vx = baseVx + (Math.random() - 0.5) * turbulenceFactor;
-        p.vy += (Math.random() - 0.5) * turbulenceFactor * 0.3; // Less vertical drift
-    }
+    const maxVx = mapLog(re, 2301, RE_MAX, 2, 9);
+    const turbulenceFactor = Math.max(0, Math.log10(re / 2000)) * 2.0;
     
-    // 2. Update position
+    // Model velocity based on distance from the wall. All particles now use this logic.
+    const boundaryLayerThickness = wallBaseY - boundaryLayerTopY;
+    const distFromWall = Math.max(0, wallBaseY - p.y);
+    const depthRatio = boundaryLayerThickness > 0 ? Math.min(1, distFromWall / boundaryLayerThickness) : 1;
+    const velocityFactor = Math.pow(depthRatio, 1/7);
+    p.vx = maxVx * velocityFactor;
+    p.vy = (Math.random() - 0.5) * turbulenceFactor * (2.0 - velocityFactor * 1.5);
+    
     p.x += p.vx;
     p.y += p.vy;
 
-    // 3. Handle collisions with the physical wall
-    if (p.y + p.radius > physicalWallY) {
-        p.y = physicalWallY - p.radius;
-        
-        // Radical collision creating a visible "kick" to represent form drag
-        p.vy = -(Math.random() * 4 + 2);   // Strong, unpredictable upward bounce
-        p.vx += (Math.random() - 0.5) * 5; // Kick to the side, simulating an eddy
-        p.flashFrames = 8; // Flash for 8 frames to visualize the 'radical' collision
+    // --- Boundary Collision ---
+    if (p.y + p.radius > physicalWallY) { // Wall collision check first
+        p.y = physicalWallY - p.radius; // Snap to wall surface
+
+        // A peak is exposed if the wall surface is higher (smaller Y) than the sublayer's top line
+        const isPeakExposed = physicalWallY < sublayerTopY;
+
+        if (isPeakExposed) {
+            // VIOLENTLY Exaggerated collision for exposed roughness peaks, scaled for the high zoom level
+            p.vy = -(Math.random() * 22 + 18);   // VIOLENT upward kick
+            p.vx += (Math.random() - 0.5) * 40;  // VIOLENT sideways kick
+            p.flashFrames = 60;                  // VIOLENT long, bright flash
+        } else {
+            // Damped collision for submerged roughness
+            p.vy = -(Math.random() * 3 + 1);    // Gentle upward kick
+            p.vx += (Math.random() - 0.5) * 5;   // Gentle sideways kick
+            p.flashFrames = 7;
+        }
+    } else if (p.y + p.radius > sublayerTopY) {
+        // If no wall collision, check for collision with the viscous sublayer top boundary.
+        p.y = sublayerTopY - p.radius;
+        p.vy *= -0.3; // Dampened bounce
     }
 
-    // 4. Handle particle reset if it goes offscreen
+    // Reset logic
     if (p.x > canvas.clientWidth + p.radius) {
-        p.x = -p.radius;
-        p.y = Math.random() * (sublayerTopY - 20); // Respawn above sublayer
+        p.x = -p.radius - Math.random() * 40;
+        p.y = Math.random() * (wallBaseY - 10);
     } else if (p.x < -p.radius) {
-        p.x = canvas.clientWidth + p.radius;
-        p.y = Math.random() * (sublayerTopY - 20); // Respawn above sublayer
+        p.x = canvas.clientWidth + p.radius + Math.random() * 40;
+        p.y = Math.random() * (wallBaseY - 10);
     }
     if (p.y < -p.radius) {
-        p.y = 0;
-        p.x = Math.random() * canvas.clientWidth;
+        p.x = -p.radius - Math.random() * 40;
+        p.y = Math.random() * (wallBaseY - 10);
     }
     
-    // Set color, with flash effect
+    // Color logic
     if (p.flashFrames && p.flashFrames > 0) {
-        p.color = '#ffffff'; // Flash bright white
+        p.color = '#ffffff';
         p.flashFrames--;
     } else {
         p.color = getColorForVelocity(Math.hypot(p.vx, p.vy), 4);
@@ -652,7 +710,7 @@ function drawPipe3D(context: CanvasRenderingContext2D = ctx) {
     // Top wall
     context.fillRect(0, 0, width, pipeTopY);
     // Bottom wall
-    context.fillRect(0, pipeBottomY, width, height);
+    context.fillRect(0, pipeBottomY, width, height - pipeBottomY);
 
     // Add a highlight to the top inner edge for a 3D feel
     const topHighlightGradient = context.createLinearGradient(0, pipeTopY, 0, pipeTopY + 5);
@@ -774,7 +832,14 @@ const drawTextWithBackground = (
     // 1. Get annotation state & visibility
     const annotation = id ? (annotations.get(id) || { offset: { x: 0, y: 0 } }) : { offset: { x: 0, y: 0 } };
     const offset = annotation.offset;
-    const isVisible = id ? (annotationVisibility.get(id) ?? true) : true;
+    
+    let isVisible = true;
+    if (id) {
+        const category = annotationToCategoryMap[id];
+        const isCategoryVisible = category ? (labelCategoryVisibility[category] ?? true) : true;
+        const isIndividuallyVisible = annotationVisibility.get(id) ?? true;
+        isVisible = isCategoryVisible && isIndividuallyVisible;
+    }
 
     // 2. Calculate natural metrics to determine position for placeholder if needed
     const baseFontSize = 14;
@@ -789,6 +854,11 @@ const drawTextWithBackground = (
 
     // 3. Handle visibility
     if (id && !isVisible) {
+        // In detail views, completely hide annotations. In 'Explain' mode, show the placeholder.
+        if (currentViewMode !== 'full') {
+            return { x: 0, y: 0, width: 0, height: 0 };
+        }
+
         let placeholderX = x + offset.x;
         const placeholderY = y + offset.y - naturalHeight / 2;
         if (textAlign === 'left') {
@@ -918,7 +988,12 @@ const drawInfoBox = (
     const annotation = annotations.get(id) || { offset: { x: 0, y: 0 } };
     const offsetX = annotation.offset.x;
     const offsetY = annotation.offset.y;
-    const isVisible = annotationVisibility.get(id) ?? true;
+    
+    const category = annotationToCategoryMap[id];
+    const isCategoryVisible = category ? (labelCategoryVisibility[category] ?? true) : true;
+    const isIndividuallyVisible = annotationVisibility.get(id) ?? true;
+    const isVisible = isCategoryVisible && isIndividuallyVisible;
+
 
     // --- Calculate Natural Metrics (needed for both states) ---
     const baseLineHeight = 18;
@@ -960,6 +1035,10 @@ const drawInfoBox = (
 
     // --- Handle Visibility ---
     if (!isVisible) {
+        // In detail views, completely hide annotations. In 'Explain' mode, show the placeholder.
+        if (currentViewMode !== 'full') {
+             return { x: 0, y: 0, width: 0, height: 0 };
+        }
         drawPlaceholder(context, id, baseX + offsetX, baseY + offsetY);
         return { x: 0, y: 0, width: 0, height: 0 };
     }
@@ -1074,7 +1153,11 @@ const drawConditionGauge = (
     const annotation = annotations.get(id) || { offset: { x: 0, y: 0 } };
     const offsetX = annotation.offset.x;
     const offsetY = annotation.offset.y;
-    const isVisible = annotationVisibility.get(id) ?? true;
+    
+    const category = annotationToCategoryMap[id];
+    const isCategoryVisible = category ? (labelCategoryVisibility[category] ?? true) : true;
+    const isIndividuallyVisible = annotationVisibility.get(id) ?? true;
+    const isVisible = isCategoryVisible && isIndividuallyVisible;
 
     // 2. Natural metrics & Base Position
     const naturalWidth = 200;
@@ -1086,7 +1169,7 @@ const drawConditionGauge = (
 
     // 3. Handle visibility
     if (!isVisible) {
-        drawPlaceholder(context, id, baseX + offsetX, baseY + offsetY);
+        // This gauge only appears in detail views, so we always hide it completely when toggled off.
         return;
     }
 
@@ -1187,7 +1270,11 @@ const drawBoundaryProfile = (
     const annotation = annotations.get(id) || { offset: { x: 0, y: 0 } };
     const offsetX = annotation.offset.x;
     const offsetY = annotation.offset.y;
-    const isVisible = annotationVisibility.get(id) ?? true;
+
+    const category = annotationToCategoryMap[id];
+    const isCategoryVisible = category ? (labelCategoryVisibility[category] ?? true) : true;
+    const isIndividuallyVisible = annotationVisibility.get(id) ?? true;
+    const isVisible = isCategoryVisible && isIndividuallyVisible;
 
     const naturalWidth = 150;
     const naturalHeight = 220;
@@ -1197,7 +1284,7 @@ const drawBoundaryProfile = (
     const baseY = margin;
 
     if (!isVisible) {
-        drawPlaceholder(context, id, baseX + offsetX, baseY + offsetY);
+        // This gauge only appears in detail views, so we always hide it completely when toggled off.
         return;
     }
 
@@ -1343,13 +1430,19 @@ function drawExplanationOverlay(
 
     if (uiFlowState === 'laminar' || uiFlowState === 'transition') {
         const text1 = drawTextWithBackground(context, 'Smooth, parallel layers', 100, 40, 'left', 'explain-laminar-1');
-        drawArrow(context, text1.x + text1.width/2, text1.y + text1.height, 100, 85, progress);
+        if (text1.width > 0 && (annotationVisibility.get('explain-laminar-1') ?? true) && (labelCategoryVisibility['contextual'] ?? true)) {
+            drawArrow(context, text1.x + text1.width/2, text1.y + text1.height, 100, 85, progress);
+        }
 
         const text2 = drawTextWithBackground(context, 'Max Velocity at Center', centerX, centerY - 40, 'center', 'explain-laminar-2');
-        drawArrow(context, text2.x + text2.width/2, text2.y + text2.height, centerX, centerY, progress);
+        if (text2.width > 0 && (annotationVisibility.get('explain-laminar-2') ?? true) && (labelCategoryVisibility['contextual'] ?? true)) {
+            drawArrow(context, text2.x + text2.width/2, text2.y + text2.height, centerX, centerY, progress);
+        }
 
         const text3 = drawTextWithBackground(context, 'Velocity ≈ 0 at Wall', width - 100, WALL_BUFFER + 25, 'center', 'explain-laminar-3');
-        drawArrow(context, text3.x + text3.width/2, text3.y, width - 100, WALL_BUFFER + 5, progress);
+        if (text3.width > 0 && (annotationVisibility.get('explain-laminar-3') ?? true) && (labelCategoryVisibility['contextual'] ?? true)) {
+            drawArrow(context, text3.x + text3.width/2, text3.y, width - 100, WALL_BUFFER + 5, progress);
+        }
 
         drawInfoBox(context, 'Laminar Flow Impact', [
             '<b>Friction Driver:</b> Fluid Viscosity',
@@ -1366,7 +1459,9 @@ function drawExplanationOverlay(
         const eddyRadius = 20;
 
         const text1 = drawTextWithBackground(context, 'Chaotic Eddies & Mixing', eddyX, eddyY - eddyRadius - 25, 'center', 'explain-turb-1');
-        drawArrow(context, text1.x + text1.width/2, text1.y + text1.height, eddyX, eddyY - eddyRadius, progress);
+        if (text1.width > 0 && (annotationVisibility.get('explain-turb-1') ?? true) && (labelCategoryVisibility['contextual'] ?? true)) {
+            drawArrow(context, text1.x + text1.width/2, text1.y + text1.height, eddyX, eddyY - eddyRadius, progress);
+        }
         context.beginPath();
         context.arc(eddyX, eddyY, eddyRadius * progress, 0, Math.PI * 2);
         context.stroke();
@@ -1383,7 +1478,9 @@ function drawExplanationOverlay(
 
         if (physicsFlowState === 'fully-turbulent') {
             const text3 = drawTextWithBackground(context, 'Thin Boundary Layer', 100, boundaryLayerYTop + 20, 'left', 'explain-turb-3');
-            drawArrow(context, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
+            if (text3.width > 0 && (annotationVisibility.get('explain-turb-3') ?? true) && (labelCategoryVisibility['contextual'] ?? true)) {
+                drawArrow(context, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
+            }
             drawInfoBox(context, 'Complete Turbulence Impact', [
                 '<b>Friction Driver:</b> Pipe Roughness',
                 '<b>Pressure Drop:</b> Maximum',
@@ -1394,7 +1491,9 @@ function drawExplanationOverlay(
             ], easeOutProgress, 'explain-fullyturb-infobox');
         } else { // Partially turbulent
             const text3 = drawTextWithBackground(context, 'Thicker Boundary Layer', 100, boundaryLayerYTop + 20, 'left', 'explain-turb-3');
-            drawArrow(context, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
+            if (text3.width > 0 && (annotationVisibility.get('explain-turb-3') ?? true) && (labelCategoryVisibility['contextual'] ?? true)) {
+                drawArrow(context, text3.x + text3.width/2, text3.y, 100, boundaryLayerYTop - 5, progress);
+            }
             drawInfoBox(context, 'Partial Turbulence Impact', [
                 '<b>Friction Driver:</b> Re & Roughness',
                 '<b>Pressure Drop:</b> High',
@@ -1438,9 +1537,13 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     }
     const highestPeakAbsoluteHeight = maxRoughnessValue * roughnessHeight;
     const lowestValleyAbsoluteHeight = minRoughnessValue * roughnessHeight;
+    const peakToValleyRange = highestPeakAbsoluteHeight - lowestValleyAbsoluteHeight;
     
-    // The visual top of the viscous sublayer moves from the highest peak down towards the lowest valley as Re increases.
-    const startY = wallBaseY - highestPeakAbsoluteHeight;
+    // User wants the sublayer to start 1/3 of the roughness range above the highest peak at low Re.
+    const startOffset = highestPeakAbsoluteHeight + (peakToValleyRange / 3);
+    const startY = wallBaseY - startOffset;
+
+    // The sublayer still compresses towards the lowest valley as Re increases.
     const endY = wallBaseY - lowestValleyAbsoluteHeight;
     const viscousSublayerTopY_visual = re <= 2300 ? startY : mapLog(re, 2301, RE_MAX, startY, endY);
     
@@ -1553,6 +1656,9 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     // The key comparison is if roughness pierces the viscous sublayer
     const isSmooth = viscousSublayerThickness > highestPeakAbsoluteHeight;
 
+    // Check if the InfoBox annotation should be visible
+    const isInfoBoxVisible = (labelCategoryVisibility['infoBox'] ?? true) && (annotationVisibility.get('boundary-infobox') ?? true);
+
     if (isSmooth) {
         drawInfoBox(context, 'Hydraulically Smooth Flow', [
             'The <b>viscous sublayer</b> is thicker than the',
@@ -1564,7 +1670,9 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
         ], 1.0, 'boundary-infobox');
 
         const textRect = drawTextWithBackground(context, 'Roughness buried in sublayer', width / 2, wallBaseY - roughnessHeight - 20, 'center', 'boundary-text-1');
-        drawArrow(context, textRect.x + textRect.width / 2, textRect.y + textRect.height, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
+        if (textRect.width > 0 && (labelCategoryVisibility['contextual'] ?? true) && (annotationVisibility.get('boundary-text-1') ?? true)) {
+            drawArrow(context, textRect.x + textRect.width / 2, textRect.y + textRect.height, textRect.x + textRect.width / 2, wallBaseY - roughnessHeight);
+        }
     } else {
         drawInfoBox(context, 'Rough Flow', [
             'Roughness elements pierce the thin <b>viscous',
@@ -1574,7 +1682,9 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
             '<b>Friction Driver:</b> Pipe Roughness (ε)'
         ], 1.0, 'boundary-infobox');
         const textRect = drawTextWithBackground(context, 'Roughness pierces sublayer', width / 2 + 50, wallBaseY - highestPeakAbsoluteHeight - 40, 'center', 'boundary-text-1');
-        drawArrow(context, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - highestPeakAbsoluteHeight + 5);
+        if (textRect.width > 0 && (labelCategoryVisibility['contextual'] ?? true) && (annotationVisibility.get('boundary-text-1') ?? true)) {
+            drawArrow(context, textRect.x + textRect.width / 2, textRect.y + textRect.height, width / 2 + 5, wallBaseY - highestPeakAbsoluteHeight + 5);
+        }
     }
     
     // Label Layers
@@ -1582,13 +1692,17 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     const physicalViscousSublayerTopY = wallBaseY - sublayerThicknessForLabel; 
     const boundaryLabelY = boundaryLayerTopY + (physicalViscousSublayerTopY - boundaryLayerTopY) / 2;
     const boundaryRect = drawTextWithBackground(context, 'Turbulent Layer', 120, boundaryLabelY, 'center', 'boundary-boundary-label');
-    drawArrow(context, boundaryRect.x, boundaryRect.y - boundaryRect.height / 2, boundaryRect.x, boundaryLayerTopY);
-    drawArrow(context, boundaryRect.x, boundaryRect.y + boundaryRect.height / 2, boundaryRect.x, physicalViscousSublayerTopY);
+    if (boundaryRect.width > 0 && (labelCategoryVisibility['layerLabels'] ?? true) && (annotationVisibility.get('boundary-boundary-label') ?? true)) {
+        drawArrow(context, boundaryRect.x, boundaryRect.y - boundaryRect.height / 2, boundaryRect.x, boundaryLayerTopY);
+        drawArrow(context, boundaryRect.x, boundaryRect.y + boundaryRect.height / 2, boundaryRect.x, physicalViscousSublayerTopY);
+    }
 
     const sublayerLabelY = physicalViscousSublayerTopY + sublayerThicknessForLabel / 2;
     const sublayerRect = drawTextWithBackground(context, 'Viscous Sublayer', width - 120, sublayerLabelY, 'center', 'boundary-sublayer-label');
-    drawArrow(context, sublayerRect.x, sublayerRect.y - sublayerRect.height / 2, sublayerRect.x, physicalViscousSublayerTopY);
-    drawArrow(context, sublayerRect.x, sublayerRect.y + sublayerRect.height / 2, sublayerRect.x, wallBaseY);
+    if (sublayerRect.width > 0 && (labelCategoryVisibility['layerLabels'] ?? true) && (annotationVisibility.get('boundary-sublayer-label') ?? true)) {
+        drawArrow(context, sublayerRect.x, sublayerRect.y - sublayerRect.height / 2, sublayerRect.x, physicalViscousSublayerTopY);
+        drawArrow(context, sublayerRect.x, sublayerRect.y + sublayerRect.height / 2, sublayerRect.x, wallBaseY);
+    }
 
     context.restore();
 }
@@ -1643,6 +1757,7 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     
     // The lowest valley corresponds to a normalized profile value of 0, so its height is 0.
     const lowestValleyAbsoluteHeight = 0;
+    const peakToValleyRange = highestPeakAbsoluteHeight - lowestValleyAbsoluteHeight;
 
     // --- Draw Wall & Layers ---
     // STEP 1: Draw the wall material shape itself.
@@ -1659,7 +1774,9 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     context.fill();
 
     // The visual top of the viscous sublayer moves from the highest peak down towards the lowest valley as Re increases.
-    const startY = wallBaseY - highestPeakAbsoluteHeight;
+    // User wants the sublayer to start 1/3 of the roughness range above the highest peak at low Re.
+    const startOffset = highestPeakAbsoluteHeight + (peakToValleyRange / 3);
+    const startY = wallBaseY - startOffset;
     const endY = wallBaseY - lowestValleyAbsoluteHeight; // Effectively wallBaseY
     const viscousSublayerTopY_visual = re <= 2300 ? startY : mapLog(re, 2301, RE_MAX, startY, endY);
 
@@ -1786,32 +1903,11 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     } else {
         frictionDriverText = 'Friction Driver: Re + Roughness';
     }
-
-    context.save();
-    const padding = 12;
     const margin = 15;
-    context.font = 'bold 13px "Roboto", sans-serif';
-    context.textAlign = 'right';
-    context.textBaseline = 'middle';
-    const textMetrics = context.measureText(frictionDriverText);
-    const rectHeight = 14 + padding;
-    const rectWidth = textMetrics.width + padding * 2;
-    const rectX = width - margin - rectWidth;
-    const rectY = margin;
-    const textX = width - margin - padding;
-    const textY = rectY + rectHeight / 2;
-
-    context.fillStyle = 'rgba(22, 33, 62, 0.9)';
-    context.strokeStyle = '#e0e0e0';
-    context.lineWidth = 1;
-    context.beginPath();
-    context.roundRect(rectX, rectY, rectWidth, rectHeight, 6);
-    context.fill();
-    context.stroke();
-    context.fillStyle = 'white';
-    context.fillText(frictionDriverText, textX, textY);
-    context.restore();
-
+    const textX = width - margin;
+    const textY = margin + 18; // Approx middle of the desired box
+    drawTextWithBackground(context, frictionDriverText, textX, textY, 'right', 'wall-friction-driver');
+    
     // --- Draw Condition Gauge ---
     drawConditionGauge(context, viscousSublayerThickness, highestPeakAbsoluteHeight, 'wall-condition-gauge');
 
@@ -1830,7 +1926,9 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     const sublayerLabelCoords = { x: 40, y: 220 };
     
     const turbulentLabelRect = drawTextWithBackground(context, 'Turbulent Layer', 40, 70, 'left', 'wall-boundary-label');
-    drawArrow(context, turbulentLabelRect.x + 20, turbulentLabelRect.y + turbulentLabelRect.height, turbulentLabelRect.x + 20, boundaryLayerTopY);
+    if (turbulentLabelRect.width > 0 && (labelCategoryVisibility['layerLabels'] ?? true) && (annotationVisibility.get('wall-boundary-label') ?? true)) {
+        drawArrow(context, turbulentLabelRect.x + 20, turbulentLabelRect.y + turbulentLabelRect.height, turbulentLabelRect.x + 20, boundaryLayerTopY);
+    }
 
     if (isSmooth) {
         drawInfoBox(context, 'Wall View: Hydraulically Smooth', [
@@ -1844,10 +1942,14 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
         ], 1.0, 'wall-infobox', infoBoxCoords);
         
         const peakRect = drawTextWithBackground(context, 'Submerged Peak (ε)', peakLabelCoords.x, peakLabelCoords.y, 'center', 'wall-peak-label');
-        drawArrow(context, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, highestPeakX, roughnessPeakY);
+        if (peakRect.width > 0 && (labelCategoryVisibility['contextual'] ?? true) && (annotationVisibility.get('wall-peak-label') ?? true)) {
+            drawArrow(context, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, highestPeakX, roughnessPeakY);
+        }
         
         const sublayerRect = drawTextWithBackground(context, 'Thick viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
-        drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY_visual);
+        if (sublayerRect.width > 0 && (labelCategoryVisibility['layerLabels'] ?? true) && (annotationVisibility.get('wall-sublayer-label') ?? true)) {
+            drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY_visual);
+        }
     } else {
         drawInfoBox(context, 'Wall View: Rough Flow', [
             'The <b>viscous sublayer</b> is very thin, failing',
@@ -1860,10 +1962,14 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
         ], 1.0, 'wall-infobox', infoBoxCoords);
         
         const peakRect = drawTextWithBackground(context, 'Exposed Peak creates drag', peakLabelCoords.x, peakLabelCoords.y, 'center', 'wall-peak-label');
-        drawArrow(context, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, highestPeakX, roughnessPeakY);
+        if (peakRect.width > 0 && (labelCategoryVisibility['contextual'] ?? true) && (annotationVisibility.get('wall-peak-label') ?? true)) {
+            drawArrow(context, peakRect.x + peakRect.width / 2, peakRect.y + peakRect.height, highestPeakX, roughnessPeakY);
+        }
 
         const sublayerRect = drawTextWithBackground(context, 'Thin viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
-        drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY_visual);
+        if (sublayerRect.width > 0 && (labelCategoryVisibility['layerLabels'] ?? true) && (annotationVisibility.get('wall-sublayer-label') ?? true)) {
+            drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY_visual);
+        }
     }
     
     context.restore();
@@ -1931,6 +2037,8 @@ function updateIndicatorsAndDashboard(re: number, absRoughness: number, diameter
         if (pos) {
             const indicator = document.createElement('div');
             indicator.className = 'flow-indicator';
+            indicator.id = `indicator-${res.name.toLowerCase()}`;
+            indicator.dataset.model = res.name;
             indicator.style.top = pos.top;
             indicator.style.left = pos.left;
             indicator.style.backgroundColor = res.color;
@@ -2013,6 +2121,7 @@ function animateFullPipeView(time: number) {
 
 function animateDetailView(time: number) {
     currentFrameHitboxes = [];
+    const height = canvas.clientHeight;
     const zoomFactor = 2000;
     const roughnessHeight = absoluteRoughnessIN * zoomFactor;
     
@@ -2029,15 +2138,23 @@ function animateDetailView(time: number) {
     }
     const highestPeakAbsoluteHeight = maxRoughnessValue * roughnessHeight;
     const lowestValleyAbsoluteHeight = minRoughnessValue * roughnessHeight;
-    const wallBaseY = canvas.clientHeight * 0.9;
-    const startY = wallBaseY - highestPeakAbsoluteHeight;
+    const wallBaseY = height * 0.9;
+    const peakToValleyRange = highestPeakAbsoluteHeight - lowestValleyAbsoluteHeight;
+    
+    const startOffset = highestPeakAbsoluteHeight + (peakToValleyRange / 3);
+    const startY = wallBaseY - startOffset;
+
     const endY = wallBaseY - lowestValleyAbsoluteHeight;
     const sublayerTopY = currentRe <= 2300 ? startY : mapLog(currentRe, 2301, RE_MAX, startY, endY);
+
+    const boundaryLayerThickness = mapLog(currentRe, 2301, RE_MAX, 100, 40);
+    const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
 
     drawBoundaryDetailView(ctx, currentRe, absoluteRoughnessIN, time);
 
     particles.forEach(p => {
-        updateParticleInDetailView(p, currentRe, roughnessHeight, sublayerTopY);
+        updateParticleInDetailView(p, currentRe, roughnessHeight, sublayerTopY, boundaryLayerTopY);
+        
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
@@ -2049,27 +2166,29 @@ function animateDetailView(time: number) {
 
 function animatePipeWallDetailView(time: number) {
     currentFrameHitboxes = [];
+    const height = canvas.clientHeight;
     
     drawPipeWallDetailView(ctx, currentRe, absoluteRoughnessIN, time);
 
-    // Calculate dynamic sublayer top for physics consistency.
-    // Must be consistent with the logic in drawPipeWallDetailView.
     const wallViewZoomFactor = 25000;
     const roughnessHeight = absoluteRoughnessIN * wallViewZoomFactor;
     
-    // Since particle physics uses the normalized profile, the highest peak
-    // has a conceptual height of 1.0 * roughnessHeight.
     const highestPeakAbsoluteHeight = roughnessHeight;
     const lowestValleyAbsoluteHeight = 0;
+    const peakToValleyRange = highestPeakAbsoluteHeight - lowestValleyAbsoluteHeight;
 
-    const wallBaseY = canvas.clientHeight * 0.85;
-    const startY = wallBaseY - highestPeakAbsoluteHeight;
+    const wallBaseY = height * 0.85;
+    const startOffset = highestPeakAbsoluteHeight + (peakToValleyRange / 3);
+    const startY = wallBaseY - startOffset;
     const endY = wallBaseY - lowestValleyAbsoluteHeight;
     const sublayerTopY = currentRe <= 2300 ? startY : mapLog(currentRe, 2301, RE_MAX, startY, endY);
 
+    const boundaryLayerThickness = mapLog(currentRe, 2301, RE_MAX, 250, 80);
+    const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
 
     particles.forEach(p => {
-        updateParticleInWallDetailView(p, currentRe, roughnessHeight, sublayerTopY);
+        updateParticleInWallDetailView(p, currentRe, roughnessHeight, sublayerTopY, boundaryLayerTopY);
+
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
@@ -2181,8 +2300,10 @@ function handleAppResize() {
 }
 
 function updateViewModeUI() {
+    const isDetailView = currentViewMode === 'boundary' || currentViewMode === 'wall';
+    
     // Manage visibility of the Pipe Wall Detail button
-    const canShowWallDetail = currentViewMode === 'boundary' || currentViewMode === 'wall' || (isTransitioning && (transitionTargetView === 'boundary' || transitionTargetView === 'wall'));
+    const canShowWallDetail = isDetailView || (isTransitioning && (transitionTargetView === 'boundary' || transitionTargetView === 'wall'));
     pipeWallDetailBtn.classList.toggle('hidden', !canShowWallDetail);
     
     // Update the button text based on the current state if it's visible
@@ -2191,6 +2312,9 @@ function updateViewModeUI() {
         pipeWallDetailBtn.textContent = effectiveView === 'wall' ? 'Boundary Layer Detail' : 'Pipe Wall Detail';
     }
 
+    // Manage visibility of contextual canvas buttons (Explain vs Toggle Labels)
+    explainBtn.classList.toggle('hidden', isDetailView);
+    labelsControlContainer.classList.toggle('hidden', !isDetailView);
 
     // Manage active states of all buttons
     const activePreset = (Object.keys(presetReValues) as FlowPreset[]).find(p => presetReValues[p] === targetRe);
@@ -2198,30 +2322,47 @@ function updateViewModeUI() {
     laminarBtn.classList.toggle('active', currentViewMode === 'full' && activePreset === 'laminar');
     partiallyTurbulentBtn.classList.toggle('active', currentViewMode === 'full' && activePreset === 'partially-turbulent');
     fullyTurbulentBtn.classList.toggle('active', currentViewMode === 'full' && activePreset === 'fully-turbulent');
-    boundaryDetailBtn.classList.toggle('active', currentViewMode === 'boundary' || currentViewMode === 'wall');
+    boundaryDetailBtn.classList.toggle('active', isDetailView);
     
-    // Pipe wall detail doesn't have its own primary active state, it modifies the boundary button
-    // But we can set its aria-pressed state for accessibility
-    pipeWallDetailBtn.setAttribute('aria-pressed', (currentViewMode === 'wall').toString());
-
-
     // Set aria-pressed for all buttons
     [laminarBtn, partiallyTurbulentBtn, fullyTurbulentBtn, boundaryDetailBtn].forEach(btn => {
         btn.setAttribute('aria-pressed', btn.classList.contains('active').toString());
     });
+    pipeWallDetailBtn.setAttribute('aria-pressed', (currentViewMode === 'wall').toString());
 
-    // Manage explain button state
-    explainBtn.disabled = currentViewMode !== 'full';
-    if (explainBtn.disabled) {
-        showExplanation = false;
-        explainBtn.classList.remove('active');
-        explainBtn.setAttribute('aria-checked', 'false');
-        explanationAnimationStartTimestamp = null;
+    // Sync state of contextual buttons
+    if (isDetailView) {
+        // We are in a detail view, so 'explain' should be off.
+        if (showExplanation) {
+            showExplanation = false;
+            explanationAnimationStartTimestamp = null;
+        }
+        populateLabelsDropdown();
     }
+    // Always sync explain button state for when we return to full view
+    explainBtn.classList.toggle('active', showExplanation);
+    explainBtn.setAttribute('aria-checked', String(showExplanation));
 }
+
 
 function startViewTransition(targetView: ViewMode) {
     if (isTransitioning || currentViewMode === targetView) return;
+
+    // --- New logic for label visibility ---
+    if (targetView === 'boundary' || targetView === 'wall') {
+        // When entering a detail view, turn off all label categories.
+        Object.keys(labelCategoryVisibility).forEach(cat => {
+            labelCategoryVisibility[cat as LabelCategory] = false;
+        });
+    } else if (targetView === 'full') {
+        // When returning to the full view, turn all categories back on.
+        Object.keys(labelCategoryVisibility).forEach(cat => {
+            labelCategoryVisibility[cat as LabelCategory] = true;
+        });
+        // Also reset any individually hidden annotations when returning to full view.
+        annotationVisibility.clear();
+    }
+    // --- End new logic ---
 
     transitionSourceView = currentViewMode;
     transitionTargetView = targetView;
@@ -2391,9 +2532,9 @@ function initDragHandler() {
     };
 
     const handleDragStart = (clientX: number, clientY: number): boolean => {
-        if (currentViewMode === 'full' && !showExplanation) {
-            return false;
-        }
+        const isVisible = currentViewMode === 'full' ? showExplanation : !labelsControlContainer.classList.contains('hidden');
+        if (!isVisible) return false;
+
         const { x: mouseX, y: mouseY } = getCanvasCoords(clientX, clientY);
 
         for (let i = currentFrameHitboxes.length - 1; i >= 0; i--) {
@@ -2403,8 +2544,8 @@ function initDragHandler() {
 
             if (isHit) {
                 if (item.type === 'toggle-visibility') {
-                    const isVisible = annotationVisibility.get(item.id) ?? true;
-                    annotationVisibility.set(item.id, !isVisible);
+                    const isCurrentlyVisible = annotationVisibility.get(item.id) ?? true;
+                    annotationVisibility.set(item.id, !isCurrentlyVisible);
                     // Consume the click event but do not start a drag.
                     isInteracting = false;
                     draggedAnnotationId = null;
@@ -2478,7 +2619,8 @@ function initDragHandler() {
     };
 
     const handleHover = (clientX: number, clientY: number) => {
-        if (isInteracting || (currentViewMode === 'full' && !showExplanation)) {
+        const isVisible = currentViewMode === 'full' ? showExplanation : !labelsControlContainer.classList.contains('hidden');
+        if (isInteracting || !isVisible) {
              canvas.style.cursor = 'default';
              return;
         }
@@ -2626,8 +2768,33 @@ reynoldsInput.addEventListener('change', (e) => {
 
 pipeDiameterSelect.addEventListener('change', (e) => {
     const selectedDiameter = (e.target as HTMLSelectElement).value;
+    if (selectedDiameter === 'custom') {
+        pipeDiameterInput.focus();
+        return;
+    }
     currentPipeDiameterIN = PIPE_SCHEDULE_40_IDS_IN.get(selectedDiameter) || 4.026;
-    pipeDiameterValue.textContent = `ID: ${currentPipeDiameterIN.toFixed(3)} in`;
+    pipeDiameterInput.value = currentPipeDiameterIN.toFixed(3);
+    updateRelativeRoughnessInput();
+});
+
+pipeDiameterInput.addEventListener('change', (e) => {
+    let val = parseFloat((e.target as HTMLInputElement).value);
+    if (isNaN(val) || val <= 0) {
+        (e.target as HTMLInputElement).value = currentPipeDiameterIN.toFixed(3);
+        return;
+    }
+    val = Math.max(0.1, Math.min(30, val));
+    currentPipeDiameterIN = val;
+    (e.target as HTMLInputElement).value = currentPipeDiameterIN.toFixed(3);
+
+    let matchingKey = 'custom';
+    for (const [key, id] of PIPE_SCHEDULE_40_IDS_IN.entries()) {
+        if (Math.abs(id - currentPipeDiameterIN) < 0.001) {
+            matchingKey = key;
+            break;
+        }
+    }
+    pipeDiameterSelect.value = matchingKey;
     updateRelativeRoughnessInput();
 });
 
@@ -2709,90 +2876,198 @@ explainBtn.addEventListener('click', () => {
     }
 });
 
-colebrookToggle.addEventListener('change', (e) => {
-    const isChecked = (e.target as HTMLInputElement).checked;
-    activeEquations.colebrook = isChecked;
-    colebrookExplanation.classList.toggle('hidden', !isChecked);
-});
+function populateLabelsDropdown() {
+    labelsDropdown.innerHTML = '';
 
-igtToggle.addEventListener('change', (e) => {
-    const isChecked = (e.target as HTMLInputElement).checked;
-    activeEquations.igt = isChecked;
-    const smoothCurve = document.getElementById('curve-smooth');
-    
-    igtExplanation.classList.toggle('hidden', !isChecked);
-    
-    if (smoothCurve) {
-        smoothCurve.classList.toggle('highlight-igt', isChecked);
+    const actions = document.createElement('div');
+    actions.className = 'dropdown-actions';
+
+    const showAllBtn = document.createElement('button');
+    showAllBtn.className = 'dropdown-action-btn';
+    showAllBtn.textContent = 'Show All';
+    showAllBtn.onclick = () => {
+        Object.keys(labelCategoryVisibility).forEach(cat => {
+            labelCategoryVisibility[cat as LabelCategory] = true;
+        });
+        annotationVisibility.clear();
+        populateLabelsDropdown(); // Re-render the dropdown with updated states
+    };
+    actions.appendChild(showAllBtn);
+
+    const hideAllBtn = document.createElement('button');
+    hideAllBtn.className = 'dropdown-action-btn';
+    hideAllBtn.textContent = 'Hide All';
+    hideAllBtn.onclick = () => {
+        Object.keys(labelCategoryVisibility).forEach(cat => {
+            labelCategoryVisibility[cat as LabelCategory] = false;
+        });
+        populateLabelsDropdown(); // Re-render
+    };
+    actions.appendChild(hideAllBtn);
+    labelsDropdown.appendChild(actions);
+
+    const separator = document.createElement('div');
+    separator.className = 'dropdown-separator';
+    labelsDropdown.appendChild(separator);
+
+    // Create checkboxes for each category
+    for (const key in labelCategories) {
+        const categoryId = key as LabelCategory;
+        const categoryName = labelCategories[categoryId];
+
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `label-toggle-${categoryId}`;
+        checkbox.checked = labelCategoryVisibility[categoryId];
+        checkbox.onchange = (e) => {
+            labelCategoryVisibility[categoryId] = (e.target as HTMLInputElement).checked;
+        };
+
+        const label = document.createElement('label');
+        label.htmlFor = checkbox.id;
+        label.textContent = categoryName;
+
+        item.appendChild(checkbox);
+        item.appendChild(label);
+        labelsDropdown.appendChild(item);
     }
-});
+}
 
-agaToggle.addEventListener('change', (e) => {
-    const isChecked = (e.target as HTMLInputElement).checked;
-    activeEquations.aga = isChecked;
-    agaExplanation.classList.toggle('hidden', !isChecked);
-});
-
-ipadProBtn.addEventListener('click', () => {
-    document.body.classList.toggle('ipad-pro-mode');
-    const isActive = document.body.classList.contains('ipad-pro-mode');
-    ipadProBtn.classList.toggle('active', isActive);
-    ipadProBtn.textContent = isActive ? 'Desktop View' : 'iPad Pro View';
-    ipadProBtn.setAttribute('aria-pressed', String(isActive));
-
-    // Let CSS transitions render before resizing canvas.
-    // The duration is set in the CSS for #app.
-    setTimeout(() => {
-        handleAppResize();
-    }, 450);
-});
-
-// --- Initialization ---
-function main() {
-    setupCanvas(canvas);
-    setupCanvas(velocityCanvas);
-    renderMoodyDiagramPaths();
+function initLabelsControl() {
+    let isDropdownOpen = false;
     
-    // Populate pipe diameter dropdown
-    PIPE_SCHEDULE_40_IDS_IN.forEach((_, key) => {
+    function openDropdown() {
+        populateLabelsDropdown();
+        labelsDropdown.style.display = 'flex';
+        labelsControlBtn.setAttribute('aria-expanded', 'true');
+        isDropdownOpen = true;
+    }
+
+    function closeDropdown() {
+        labelsDropdown.style.display = 'none';
+        labelsControlBtn.setAttribute('aria-expanded', 'false');
+        isDropdownOpen = false;
+    }
+
+    labelsControlBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isDropdownOpen) {
+            closeDropdown();
+        } else {
+            openDropdown();
+        }
+    });
+
+    document.addEventListener('click', (e) => {
+        if (isDropdownOpen && !labelsControlContainer.contains(e.target as Node)) {
+            closeDropdown();
+        }
+    });
+
+    // Handle keyboard navigation for accessibility
+    labelsControlContainer.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && isDropdownOpen) {
+            closeDropdown();
+            labelsControlBtn.focus();
+        }
+    });
+}
+
+
+function initEquationToggles() {
+    const toggles = [
+        { el: colebrookToggle, key: 'colebrook', explanation: colebrookExplanation },
+        { el: igtToggle, key: 'igt', explanation: igtExplanation },
+        { el: agaToggle, key: 'aga', explanation: agaExplanation },
+    ] as const;
+
+    toggles.forEach(toggle => {
+        toggle.el.addEventListener('change', () => {
+            activeEquations[toggle.key] = toggle.el.checked;
+            
+            // Show explanation only for the active non-Colebrook models
+            toggles.forEach(otherToggle => {
+                if (otherToggle.key !== 'colebrook') {
+                    otherToggle.explanation.classList.toggle('hidden', !otherToggle.el.checked);
+                }
+            });
+
+            // Ensure Colebrook explanation is visible if others are hidden
+            const anyOtherChecked = toggles.some(t => t.key !== 'colebrook' && t.el.checked);
+            colebrookExplanation.classList.toggle('hidden', anyOtherChecked);
+        });
+    });
+    // Initial sync
+    const anyOtherChecked = toggles.some(t => t.key !== 'colebrook' && t.el.checked);
+    colebrookExplanation.classList.toggle('hidden', anyOtherChecked);
+}
+
+function initPipeScheduleSelect() {
+    for (const key of PIPE_SCHEDULE_40_IDS_IN.keys()) {
         const option = document.createElement('option');
         option.value = key;
         option.textContent = key;
         pipeDiameterSelect.appendChild(option);
+    }
+    
+    // Set initial value based on default diameter
+    let matchingKey = 'custom';
+    for (const [key, id] of PIPE_SCHEDULE_40_IDS_IN.entries()) {
+        if (Math.abs(id - currentPipeDiameterIN) < 0.001) {
+            matchingKey = key;
+            break;
+        }
+    }
+    pipeDiameterSelect.value = matchingKey;
+    pipeDiameterInput.value = currentPipeDiameterIN.toFixed(3);
+    updateRelativeRoughnessInput();
+}
+
+
+function initPresentationMode() {
+    ipadProBtn.addEventListener('click', () => {
+        document.body.classList.toggle('ipad-pro-mode');
+        const isActive = document.body.classList.contains('ipad-pro-mode');
+        ipadProBtn.classList.toggle('active', isActive);
+        ipadProBtn.setAttribute('aria-pressed', String(isActive));
+        handleAppResize();
     });
-    
-    // Set initial values for new controls
-    const initialPipeKey = '4"';
-    pipeDiameterSelect.value = initialPipeKey;
-    currentPipeDiameterIN = PIPE_SCHEDULE_40_IDS_IN.get(initialPipeKey)!;
-    pipeDiameterValue.textContent = `ID: ${currentPipeDiameterIN.toFixed(3)} in`;
-    
-    absoluteRoughnessIN = parseFloat(absRoughnessSlider.value);
-    absRoughnessInput.value = absoluteRoughnessIN.toFixed(4);
-    
+
+    fullScreenBtn.addEventListener('click', toggleFullScreen);
+
+    document.addEventListener('fullscreenchange', updateFullScreenButtonState);
+    document.addEventListener('mozfullscreenchange', updateFullScreenButtonState);
+    document.addEventListener('webkitfullscreenchange', updateFullScreenButtonState);
+    document.addEventListener('msfullscreenchange', updateFullScreenButtonState);
+}
+
+// --- Main Initialization ---
+function init() {
+    // Canvas & Physics
+    setupCanvas(canvas);
+    setupCanvas(velocityCanvas);
     initParticles();
+    renderMoodyDiagramPaths();
     
-    targetRe = Math.pow(10, parseFloat(reynoldsSlider.value));
-    currentRe = targetRe;
-    reynoldsInput.value = Math.round(targetRe).toString();
+    // UI Controls
+    setPreset('laminar');
+    initPipeScheduleSelect();
+    initEquationToggles();
+    initLabelsControl();
     
+    // Layout & Resizing
     initHorizontalResizer();
     initVerticalResizer();
     initInfoTabs();
     initDragHandler();
-    updateRelativeRoughnessInput();
-    setPreset('laminar');
-
-    fullScreenBtn.addEventListener('click', toggleFullScreen);
-    document.addEventListener('fullscreenchange', updateFullScreenButtonState);
-    document.addEventListener('webkitfullscreenchange', updateFullScreenButtonState);
-    document.addEventListener('mozfullscreenchange', updateFullScreenButtonState);
-    document.addEventListener('MSFullscreenChange', updateFullScreenButtonState);
-    updateFullScreenButtonState(); // Set initial state of the button
-
-    animate();
-
+    initPresentationMode();
     window.addEventListener('resize', handleAppResize);
+
+    // Kick off animation
+    animate();
 }
 
-main();
+init();

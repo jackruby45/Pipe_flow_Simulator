@@ -25,7 +25,15 @@
                 <div class="canvas-container pipe-container">
                     <div class="canvas-header">
                         <h2 class="canvas-title">Particle Flow in Pipeline</h2>
-                        <button id="explain-btn" class="explain-btn" role="switch" aria-checked="false" title="Toggle explanation overlay">Explain</button>
+                        <div class="canvas-buttons">
+                            <div id="labels-control-container" class="labels-control hidden">
+                                <button id="labels-control-btn" class="explain-btn" aria-haspopup="true" aria-expanded="false">View Labels</button>
+                                <div id="labels-dropdown" class="labels-dropdown" role="menu" style="display: none;">
+                                    <!-- Dynamically populated by TS -->
+                                </div>
+                            </div>
+                            <button id="explain-btn" class="explain-btn" role="switch" aria-checked="false" title="Toggle explanation overlay">Explain</button>
+                        </div>
                     </div>
                     <canvas id="pipelineCanvas"></canvas>
                 </div>
@@ -78,13 +86,16 @@
                         </p>
                     </div>
                     <div class="control-group slider-controls">
-                         <div id="pipe-diameter-control-container" class="slider-container">
+                        <div id="pipe-diameter-control-container" class="slider-container">
                             <div class="slider-header">
-                                <label for="pipe-diameter-select">Nominal Pipe Diameter</label>
-                                <select id="pipe-diameter-select" class="value-select"></select>
+                                <label for="pipe-diameter-select">Nominal Pipe Size (Sch 40)</label>
+                                <select id="pipe-diameter-select" class="value-select">
+                                    <option value="custom">-- Custom ID --</option>
+                                </select>
                             </div>
-                            <div class="info-span-container">
-                                <span id="pipe-diameter-value"></span>
+                            <div class="slider-header" style="margin-top: 0.75rem;">
+                                <label for="pipe-diameter-input">Internal Diameter (ID, in)</label>
+                                <input type="number" id="pipe-diameter-input" class="value-input" min="0.1" max="30" step="0.001">
                             </div>
                         </div>
                         <div id="abs-roughness-control-container" class="slider-container">
