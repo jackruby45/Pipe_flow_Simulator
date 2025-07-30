@@ -489,7 +489,7 @@ function updateParticleInFullView(p: Particle, re: number, f: number) {
     p.y += p.vy;
 
     // --- Collision Logic ---
-    const boundaryLayerThickness = (re > 2300) ? mapLog(re, 2301, RE_MAX, 30, 5) : 0;
+    const boundaryLayerThickness = (re > 2300) ? mapLog(re, 2301, RE_MAX, 30, 5) : 30; // Use laminar thickness if laminar
     // For laminar, collide with the wall. For turbulent, collide with the boundary layer.
     const topCollisionY = WALL_BUFFER + (re > 2300 ? boundaryLayerThickness : 0);
     const bottomCollisionY = canvas.clientHeight - WALL_BUFFER - (re > 2300 ? boundaryLayerThickness : 0);
@@ -729,73 +729,74 @@ function drawPipe3D(context: CanvasRenderingContext2D = ctx) {
 
 /**
  * Draws a visual, animated representation of the boundary layer.
- * This layer is only shown for turbulent flow, is more prominent, and has a
- * subtle shimmer effect to make it feel more dynamic.
+ * This layer is now shown for all flow types for visual consistency.
  */
 function drawBoundaryLayer(context: CanvasRenderingContext2D, re: number, time: number) {
-    if (re <= 2300) return; // Only show for transition/turbulent flow
-
     const width = context.canvas.clientWidth;
     const height = context.canvas.clientHeight;
     const pipeTopY = WALL_BUFFER;
     const pipeBottomY = height - WALL_BUFFER;
 
-    // The main turbulent boundary layer gets thinner as Re increases.
-    const boundaryThickness = mapLog(re, 2301, RE_MAX, 30, 5);
-    // The viscous sublayer is much thinner.
-    const viscousSublayerThickness = mapLog(re, 2301, RE_MAX, 8, 1);
+    // For laminar flow (Re <= 2300), we use a fixed, thick layer for visual representation.
+    const boundaryThickness = re <= 2300 ? 30 : mapLog(re, 2301, RE_MAX, 30, 5);
+    const viscousSublayerThickness = re <= 2300 ? 8 : mapLog(re, 2301, RE_MAX, 8, 1);
 
     // --- Main Turbulent Boundary Layer (Reddish) ---
     const baseColor = '233, 69, 96'; // App's secondary color (red-pink)
     const topGradient = context.createLinearGradient(0, pipeTopY, 0, pipeTopY + boundaryThickness);
-    topGradient.addColorStop(0, `rgba(${baseColor}, 0.5)`); // More opaque at the wall
-    topGradient.addColorStop(1, `rgba(${baseColor}, 0)`);    // Fades to transparent
+    topGradient.addColorStop(0, `rgba(${baseColor}, 0.5)`);
+    topGradient.addColorStop(1, `rgba(${baseColor}, 0)`);
     context.fillStyle = topGradient;
     context.fillRect(0, pipeTopY, width, boundaryThickness);
+
     const bottomGradient = context.createLinearGradient(0, pipeBottomY - boundaryThickness, 0, pipeBottomY);
     bottomGradient.addColorStop(0, `rgba(${baseColor}, 0)`);
     bottomGradient.addColorStop(1, `rgba(${baseColor}, 0.5)`);
     context.fillStyle = bottomGradient;
     context.fillRect(0, pipeBottomY - boundaryThickness, width, boundaryThickness);
-    
+
     // --- Viscous Sublayer (Blueish) ---
     const sublayerColor = '74, 144, 226'; // A contrasting blue
+    const sublayerOpacity = re <= 2300 ? 0.75 : 0.65;
     const topSublayerGradient = context.createLinearGradient(0, pipeTopY, 0, pipeTopY + viscousSublayerThickness);
-    topSublayerGradient.addColorStop(0, `rgba(${sublayerColor}, 0.65)`);
+    topSublayerGradient.addColorStop(0, `rgba(${sublayerColor}, ${sublayerOpacity})`);
     topSublayerGradient.addColorStop(1, `rgba(${sublayerColor}, 0)`);
     context.fillStyle = topSublayerGradient;
     context.fillRect(0, pipeTopY, width, viscousSublayerThickness);
+
     const bottomSublayerGradient = context.createLinearGradient(0, pipeBottomY - viscousSublayerThickness, 0, pipeBottomY);
     bottomSublayerGradient.addColorStop(0, `rgba(${sublayerColor}, 0)`);
-    bottomSublayerGradient.addColorStop(1, `rgba(${sublayerColor}, 0.65)`);
+    bottomSublayerGradient.addColorStop(1, `rgba(${sublayerColor}, ${sublayerOpacity})`);
     context.fillStyle = bottomSublayerGradient;
     context.fillRect(0, pipeBottomY - viscousSublayerThickness, width, viscousSublayerThickness);
 
+    // --- Animated Shimmering Edge ---
+    // Only show the shimmer for turbulent flow for better physical representation.
+    if (re > 2300) {
+        const waveAmplitude = 1.5;
+        const waveFrequency = 0.005;
+        const waveSpeed = 0.0005;
 
-    // --- Animated Shimmering Edge for main boundary layer ---
-    const waveAmplitude = 1.5;
-    const waveFrequency = 0.005;
-    const waveSpeed = 0.0005;
+        context.beginPath();
+        context.moveTo(0, pipeTopY + boundaryThickness);
+        for (let x = 0; x < width; x++) {
+            const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
+            context.lineTo(x, pipeTopY + boundaryThickness + yOffset);
+        }
+        context.strokeStyle = `rgba(${baseColor}, 0.5)`;
+        context.lineWidth = 1;
+        context.stroke();
 
-    context.beginPath();
-    context.moveTo(0, pipeTopY + boundaryThickness);
-    for (let x = 0; x < width; x++) {
-        const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
-        context.lineTo(x, pipeTopY + boundaryThickness + yOffset);
+        context.beginPath();
+        context.moveTo(0, pipeBottomY - boundaryThickness);
+        for (let x = 0; x < width; x++) {
+            const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
+            context.lineTo(x, pipeBottomY - boundaryThickness - yOffset);
+        }
+        context.strokeStyle = `rgba(${baseColor}, 0.5)`;
+        context.lineWidth = 1;
+        context.stroke();
     }
-    context.strokeStyle = `rgba(${baseColor}, 0.5)`;
-    context.lineWidth = 1;
-    context.stroke();
-
-    context.beginPath();
-    context.moveTo(0, pipeBottomY - boundaryThickness);
-    for (let x = 0; x < width; x++) {
-        const yOffset = Math.sin(x * waveFrequency + time * waveSpeed) * waveAmplitude;
-        context.lineTo(x, pipeBottomY - boundaryThickness - yOffset);
-    }
-    context.strokeStyle = `rgba(${baseColor}, 0.5)`;
-    context.lineWidth = 1;
-    context.stroke();
 }
 
 
@@ -1524,28 +1525,17 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     const viscousSublayerThickness = mapLog(re, 2301, RE_MAX, 40, 5); // Thinner than boundary layer
     const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
 
-    // --- Find highest peak and lowest valley for sublayer positioning ---
-    let minRoughnessValue = 1.0;
+    // --- Find highest peak for annotations ---
     let maxRoughnessValue = 0;
     if (roughnessProfile.length > 0) {
         for (const val of roughnessProfile) {
             if (val > maxRoughnessValue) maxRoughnessValue = val;
-            if (val < minRoughnessValue) minRoughnessValue = val;
         }
-    } else {
-        minRoughnessValue = 0;
     }
     const highestPeakAbsoluteHeight = maxRoughnessValue * roughnessHeight;
-    const lowestValleyAbsoluteHeight = minRoughnessValue * roughnessHeight;
-    const peakToValleyRange = highestPeakAbsoluteHeight - lowestValleyAbsoluteHeight;
-    
-    // User wants the sublayer to start 1/3 of the roughness range above the highest peak at low Re.
-    const startOffset = highestPeakAbsoluteHeight + (peakToValleyRange / 3);
-    const startY = wallBaseY - startOffset;
 
-    // The sublayer still compresses towards the lowest valley as Re increases.
-    const endY = wallBaseY - lowestValleyAbsoluteHeight;
-    const viscousSublayerTopY_visual = re <= 2300 ? startY : mapLog(re, 2301, RE_MAX, startY, endY);
+    // The top of the sublayer is determined by its physical thickness relative to the base wall line.
+    const viscousSublayerTopY = wallBaseY - viscousSublayerThickness;
     
     // --- Draw Wall & Layers ---
     // STEP 1: Draw the wall material, filling the space below the roughness profile.
@@ -1583,18 +1573,20 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
     context.closePath();
     context.clip();
 
-    // STEP 3: Draw layers. Draw the larger boundary layer first, then the sublayer on top.
-    const boundaryGradient = context.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
+    // STEP 3: Draw layers as distinct bands for visual clarity.
+    // The main turbulent layer (red) goes from its top down to the sublayer's top.
+    const boundaryGradient = context.createLinearGradient(0, boundaryLayerTopY, 0, viscousSublayerTopY);
     boundaryGradient.addColorStop(0, 'rgba(233, 69, 96, 0)');
     boundaryGradient.addColorStop(1, 'rgba(233, 69, 96, 0.4)');
     context.fillStyle = boundaryGradient;
-    context.fillRect(0, boundaryLayerTopY, width, height);
+    context.fillRect(0, boundaryLayerTopY, width, viscousSublayerTopY - boundaryLayerTopY);
 
-    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY_visual, 0, wallBaseY);
-    sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0)');
+    // The viscous sublayer (blue) goes from its top down to the wall.
+    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
+    sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0.4)');
     sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.65)');
     context.fillStyle = sublayerGradient;
-    context.fillRect(0, viscousSublayerTopY_visual, width, height);
+    context.fillRect(0, viscousSublayerTopY, width, height - viscousSublayerTopY);
     
     context.restore(); // STEP 4: Restore context to remove clipping for subsequent draws.
     
@@ -1632,7 +1624,7 @@ function drawBoundaryDetailView(context: CanvasRenderingContext2D, re: number, a
                 context.save();
                 context.beginPath();
                 // Clip ripples inside the viscous sublayer
-                context.rect(0, 0, width, viscousSublayerTopY_visual);
+                context.rect(0, 0, width, viscousSublayerTopY);
                 context.clip();
                 context.beginPath();
                 context.arc(peakX, peakY, currentRadius, 0, Math.PI * 2);
@@ -1755,10 +1747,6 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     const highestPeakAbsoluteHeight = normalizedHighestPeak * roughnessHeight;
     const roughnessPeakY = wallBaseY - highestPeakAbsoluteHeight; // Retain for annotations that might need it
     
-    // The lowest valley corresponds to a normalized profile value of 0, so its height is 0.
-    const lowestValleyAbsoluteHeight = 0;
-    const peakToValleyRange = highestPeakAbsoluteHeight - lowestValleyAbsoluteHeight;
-
     // --- Draw Wall & Layers ---
     // STEP 1: Draw the wall material shape itself.
     context.beginPath();
@@ -1773,14 +1761,9 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     context.fillStyle = '#4a5568';
     context.fill();
 
-    // The visual top of the viscous sublayer moves from the highest peak down towards the lowest valley as Re increases.
-    // User wants the sublayer to start 1/3 of the roughness range above the highest peak at low Re.
-    const startOffset = highestPeakAbsoluteHeight + (peakToValleyRange / 3);
-    const startY = wallBaseY - startOffset;
-    const endY = wallBaseY - lowestValleyAbsoluteHeight; // Effectively wallBaseY
-    const viscousSublayerTopY_visual = re <= 2300 ? startY : mapLog(re, 2301, RE_MAX, startY, endY);
+    const viscousSublayerTopY = wallBaseY - viscousSublayerThickness;
 
-    // STEP 2 & 3: Draw layers, clipped to wall profile.
+    // STEP 2 & 3: Draw layers as distinct bands, clipped to wall profile.
     context.save();
     context.beginPath();
     const firstRoughnessY = wallBaseY - (((roughnessProfile[0] || 0) - minProfile) / profileRange) * roughnessHeight;
@@ -1795,19 +1778,19 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     context.closePath();
     context.clip();
 
-    // Draw the main boundary layer first. It extends from its top to the wall.
-    const boundaryGradient = context.createLinearGradient(0, boundaryLayerTopY, 0, wallBaseY);
+    // Draw the main turbulent layer (red) as a distinct band.
+    const boundaryGradient = context.createLinearGradient(0, boundaryLayerTopY, 0, viscousSublayerTopY);
     boundaryGradient.addColorStop(0, 'rgba(233, 69, 96, 0)');
     boundaryGradient.addColorStop(1, 'rgba(233, 69, 96, 0.8)');
     context.fillStyle = boundaryGradient;
-    context.fillRect(0, boundaryLayerTopY, width, height); // Fill all the way down
+    context.fillRect(0, boundaryLayerTopY, width, viscousSublayerTopY - boundaryLayerTopY);
 
-    // Draw the viscous sublayer on top. It extends from its visual top down to the wall.
-    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY_visual, 0, wallBaseY);
-    sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0.2)');
+    // Draw the viscous sublayer (blue) as a distinct band below the red one.
+    const sublayerGradient = context.createLinearGradient(0, viscousSublayerTopY, 0, wallBaseY);
+    sublayerGradient.addColorStop(0, 'rgba(74, 144, 226, 0.8)');
     sublayerGradient.addColorStop(1, 'rgba(74, 144, 226, 0.95)');
     context.fillStyle = sublayerGradient;
-    context.fillRect(0, viscousSublayerTopY_visual, width, height); // Fill all the way down
+    context.fillRect(0, viscousSublayerTopY, width, height - viscousSublayerTopY);
 
     context.restore(); // STEP 4: Restore context to remove clipping.
     
@@ -1847,7 +1830,7 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
                 context.save();
                 context.beginPath();
                 // Create a clipping region to keep ripples inside the viscous sublayer
-                context.rect(0, 0, width, viscousSublayerTopY_visual);
+                context.rect(0, 0, width, viscousSublayerTopY);
                 context.clip();
                 
                 context.beginPath();
@@ -1883,8 +1866,8 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
     // --- Add a distinct glowing line to separate layers ---
     context.save();
     context.beginPath();
-    context.moveTo(0, viscousSublayerTopY_visual);
-    context.lineTo(width, viscousSublayerTopY_visual);
+    context.moveTo(0, viscousSublayerTopY);
+    context.lineTo(width, viscousSublayerTopY);
     context.strokeStyle = 'rgba(200, 220, 255, 0.7)';
     context.lineWidth = 2;
     context.filter = 'blur(2px)';
@@ -1948,7 +1931,7 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
         
         const sublayerRect = drawTextWithBackground(context, 'Thick viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
         if (sublayerRect.width > 0 && (labelCategoryVisibility['layerLabels'] ?? true) && (annotationVisibility.get('wall-sublayer-label') ?? true)) {
-            drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY_visual);
+            drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY);
         }
     } else {
         drawInfoBox(context, 'Wall View: Rough Flow', [
@@ -1968,7 +1951,7 @@ function drawPipeWallDetailView(context: CanvasRenderingContext2D, re: number, a
 
         const sublayerRect = drawTextWithBackground(context, 'Thin viscous sublayer', sublayerLabelCoords.x, sublayerLabelCoords.y, 'left', 'wall-sublayer-label');
         if (sublayerRect.width > 0 && (labelCategoryVisibility['layerLabels'] ?? true) && (annotationVisibility.get('wall-sublayer-label') ?? true)) {
-            drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY_visual);
+            drawArrow(context, sublayerRect.x + 20, sublayerRect.y, sublayerRect.x + 20, viscousSublayerTopY);
         }
     }
     
@@ -2126,26 +2109,11 @@ function animateDetailView(time: number) {
     const roughnessHeight = absoluteRoughnessIN * zoomFactor;
     
     // Calculate heights and dynamic sublayer top for physics consistency
-    let minRoughnessValue = 1.0;
-    let maxRoughnessValue = 0;
-    if (roughnessProfile.length > 0) {
-        for (const val of roughnessProfile) {
-            if (val > maxRoughnessValue) maxRoughnessValue = val;
-            if (val < minRoughnessValue) minRoughnessValue = val;
-        }
-    } else {
-        minRoughnessValue = 0;
-    }
-    const highestPeakAbsoluteHeight = maxRoughnessValue * roughnessHeight;
-    const lowestValleyAbsoluteHeight = minRoughnessValue * roughnessHeight;
     const wallBaseY = height * 0.9;
-    const peakToValleyRange = highestPeakAbsoluteHeight - lowestValleyAbsoluteHeight;
     
-    const startOffset = highestPeakAbsoluteHeight + (peakToValleyRange / 3);
-    const startY = wallBaseY - startOffset;
-
-    const endY = wallBaseY - lowestValleyAbsoluteHeight;
-    const sublayerTopY = currentRe <= 2300 ? startY : mapLog(currentRe, 2301, RE_MAX, startY, endY);
+    // The top of the sublayer is now correctly determined by its physical thickness.
+    const viscousSublayerThickness = mapLog(currentRe, 2301, RE_MAX, 40, 5);
+    const sublayerTopY = wallBaseY - viscousSublayerThickness;
 
     const boundaryLayerThickness = mapLog(currentRe, 2301, RE_MAX, 100, 40);
     const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
@@ -2173,15 +2141,11 @@ function animatePipeWallDetailView(time: number) {
     const wallViewZoomFactor = 25000;
     const roughnessHeight = absoluteRoughnessIN * wallViewZoomFactor;
     
-    const highestPeakAbsoluteHeight = roughnessHeight;
-    const lowestValleyAbsoluteHeight = 0;
-    const peakToValleyRange = highestPeakAbsoluteHeight - lowestValleyAbsoluteHeight;
-
     const wallBaseY = height * 0.85;
-    const startOffset = highestPeakAbsoluteHeight + (peakToValleyRange / 3);
-    const startY = wallBaseY - startOffset;
-    const endY = wallBaseY - lowestValleyAbsoluteHeight;
-    const sublayerTopY = currentRe <= 2300 ? startY : mapLog(currentRe, 2301, RE_MAX, startY, endY);
+
+    // The top of the sublayer is now correctly determined by its physical thickness.
+    const viscousSublayerThickness = mapLog(currentRe, 2301, RE_MAX, 80, 10);
+    const sublayerTopY = wallBaseY - viscousSublayerThickness;
 
     const boundaryLayerThickness = mapLog(currentRe, 2301, RE_MAX, 250, 80);
     const boundaryLayerTopY = wallBaseY - boundaryLayerThickness;
